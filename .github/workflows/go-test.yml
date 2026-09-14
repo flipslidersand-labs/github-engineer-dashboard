@@ -1,0 +1,14 @@
+name: Go Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@main
+    with:
+      go-version: "1.25"
+      coverage-threshold: 0
+      working-directory: backend-go

@@ -23,9 +23,7 @@ class Settings:
     def from_env() -> "Settings":
         origins = os.environ.get("CORS_ORIGINS", "*")
         return Settings(
-            github_api_url=os.environ.get(
-                "GITHUB_API_URL", "https://api.github.com"
-            ).rstrip("/"),
+            github_api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
             github_token=(os.environ.get("GITHUB_TOKEN") or None),
             anthropic_api_key=(os.environ.get("ANTHROPIC_API_KEY") or None),
             ollama_base_url=(os.environ.get("OLLAMA_BASE_URL") or None),

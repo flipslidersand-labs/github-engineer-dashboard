@@ -58,9 +58,7 @@ async def lifespan(app: FastAPI):
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     settings = settings or Settings.from_env()
-    app = FastAPI(
-        title="github-engineer-dashboard", version=__version__, lifespan=lifespan
-    )
+    app = FastAPI(title="github-engineer-dashboard", version=__version__, lifespan=lifespan)
     app.state.settings = settings
 
     app.add_middleware(
@@ -194,12 +192,14 @@ def _register_routes(app: FastAPI) -> None:
         key = f"summary:{owner_key}:forks={int(exclude_forks)}"
         if parsed.type == UrlType.USER:
             return _cache_fetch(
-                cache, key,
+                cache,
+                key,
                 lambda: client.get_user_repos_summary(owner, exclude_forks=exclude_forks),
                 CrossRepoSummary,
             )
         return _cache_fetch(
-            cache, key,
+            cache,
+            key,
             lambda: client.get_org_repos_summary(owner, exclude_forks=exclude_forks),
             CrossRepoSummary,
         )
@@ -215,8 +215,10 @@ def _register_routes(app: FastAPI) -> None:
         if parsed.type == UrlType.USER:
             username = parsed.params["username"]
             data = _cache_fetch(
-                cache, f"activity:{username.lower()}",
-                lambda: client.get_user_activity(username), UserActivity,
+                cache,
+                f"activity:{username.lower()}",
+                lambda: client.get_user_activity(username),
+                UserActivity,
             )
             return AnalyzeResult(type="user", url=url, data=data)
 
@@ -224,8 +226,10 @@ def _register_routes(app: FastAPI) -> None:
             username = parsed.params["username"]
             repo = parsed.params["repo"]
             data = _cache_fetch(
-                cache, f"repo:{username.lower()}/{repo.lower()}",
-                lambda: client.get_repo(username, repo), RepoInfo,
+                cache,
+                f"repo:{username.lower()}/{repo.lower()}",
+                lambda: client.get_repo(username, repo),
+                RepoInfo,
             )
             return AnalyzeResult(type="repo", url=url, data=data)
 
@@ -234,8 +238,10 @@ def _register_routes(app: FastAPI) -> None:
             repo = parsed.params["repo"]
             number = int(parsed.params["number"])
             data = _cache_fetch(
-                cache, f"pr:{username.lower()}/{repo.lower()}/{number}",
-                lambda: client.get_pr(username, repo, number), PRInfo,
+                cache,
+                f"pr:{username.lower()}/{repo.lower()}/{number}",
+                lambda: client.get_pr(username, repo, number),
+                PRInfo,
             )
             return AnalyzeResult(type="pr", url=url, data=data)
 
@@ -244,8 +250,10 @@ def _register_routes(app: FastAPI) -> None:
             repo = parsed.params["repo"]
             number = int(parsed.params["number"])
             data = _cache_fetch(
-                cache, f"issue:{username.lower()}/{repo.lower()}/{number}",
-                lambda: client.get_issue(username, repo, number), IssueInfo,
+                cache,
+                f"issue:{username.lower()}/{repo.lower()}/{number}",
+                lambda: client.get_issue(username, repo, number),
+                IssueInfo,
             )
             return AnalyzeResult(type="issue", url=url, data=data)
 
@@ -313,20 +321,28 @@ def _register_routes(app: FastAPI) -> None:
         parsed = parse_github_url(url)
         if parsed.type == UrlType.USER:
             typ = "user"
-            fetch = lambda: client.get_user_activity(parsed.params["username"])
+
+            def fetch():
+                return client.get_user_activity(parsed.params["username"])
         elif parsed.type == UrlType.REPO:
             typ = "repo"
-            fetch = lambda: client.get_repo(parsed.params["username"], parsed.params["repo"])
+
+            def fetch():
+                return client.get_repo(parsed.params["username"], parsed.params["repo"])
         elif parsed.type == UrlType.PR:
             typ = "pr"
-            fetch = lambda: client.get_pr(
-                parsed.params["username"], parsed.params["repo"], int(parsed.params["number"])
-            )
+
+            def fetch():
+                return client.get_pr(
+                    parsed.params["username"], parsed.params["repo"], int(parsed.params["number"])
+                )
         elif parsed.type == UrlType.ISSUE:
             typ = "issue"
-            fetch = lambda: client.get_issue(
-                parsed.params["username"], parsed.params["repo"], int(parsed.params["number"])
-            )
+
+            def fetch():
+                return client.get_issue(
+                    parsed.params["username"], parsed.params["repo"], int(parsed.params["number"])
+                )
         else:
             raise HTTPException(status_code=422, detail="Unsupported URL type for benchmark.")
 

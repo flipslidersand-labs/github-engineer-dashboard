@@ -1,8 +1,9 @@
+from unittest.mock import patch
+
 import httpx
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
-from unittest.mock import patch
 
 from app.config import Settings
 from app.github_client import GitHubClient
@@ -68,14 +69,23 @@ def _mock_github(counter: dict) -> GitHubClient:
         if path == "/repos/torvalds/linux/pulls" and request.url.params.get("state") == "open":
             return httpx.Response(200, json=[{"number": 1}, {"number": 2}])
         if path == "/repos/torvalds/linux/pulls/1/files":
-            return httpx.Response(200, json=[
-                {"filename": "kernel/sched.c", "additions": 8, "deletions": 2},
-                {"filename": "include/linux/sched.h", "additions": 2, "deletions": 1},
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {"filename": "kernel/sched.c", "additions": 8, "deletions": 2},
+                    {"filename": "include/linux/sched.h", "additions": 2, "deletions": 1},
+                ],
+            )
         if path == "/repos/torvalds/linux/issues/5/timeline":
-            return httpx.Response(200, json=[
-                {"event": "cross-referenced", "source": {"issue": {"number": 99, "pull_request": {"url": "..."}}}},
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "event": "cross-referenced",
+                        "source": {"issue": {"number": 99, "pull_request": {"url": "..."}}},
+                    },
+                ],
+            )
         if path == "/repos/torvalds/linux":
             return httpx.Response(
                 200,
@@ -95,12 +105,20 @@ def _mock_github(counter: dict) -> GitHubClient:
         if path == "/repos/torvalds/linux/contributors":
             return httpx.Response(
                 200,
-                json=[{"login": "torvalds", "contributions": 100, "avatar_url": "https://example.com/a.png"}],
+                json=[
+                    {
+                        "login": "torvalds",
+                        "contributions": 100,
+                        "avatar_url": "https://example.com/a.png",
+                    }
+                ],
             )
         if path == "/repos/torvalds/linux/languages":
             return httpx.Response(200, json={"C": 900000, "Makefile": 50000})
         if path == "/repos/torvalds/linux/releases/latest":
-            return httpx.Response(200, json={"tag_name": "v6.9", "published_at": "2026-07-01T00:00:00Z"})
+            return httpx.Response(
+                200, json={"tag_name": "v6.9", "published_at": "2026-07-01T00:00:00Z"}
+            )
         if path == "/repos/torvalds/linux/stats/participation":
             return httpx.Response(200, json={"all": [10] * 52})
         if path == "/repos/torvalds/linux/pulls/1":
@@ -127,7 +145,9 @@ def _mock_github(counter: dict) -> GitHubClient:
         if path == "/repos/torvalds/linux/pulls/2/reviews":
             # Reviews exist but none have submitted_at (e.g. PENDING state)
             return httpx.Response(200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}])
-        if path == "/repos/torvalds/linux/pulls/1" and request.headers.get("accept", "").endswith(".diff"):
+        if path == "/repos/torvalds/linux/pulls/1" and request.headers.get("accept", "").endswith(
+            ".diff"
+        ):
             return httpx.Response(200, text="diff --git a/foo.py b/foo.py\n+print('hello')\n")
         if path == "/repos/torvalds/linux/issues/5":
             return httpx.Response(
@@ -147,20 +167,67 @@ def _mock_github(counter: dict) -> GitHubClient:
         if path == "/users/octocat/repos":
             if request.url.params.get("page") != "1":
                 return httpx.Response(200, json=[])
-            return httpx.Response(200, json=[
-                {"name": "a", "full_name": "octocat/a", "stargazers_count": 10, "forks_count": 2, "language": "Python", "fork": False, "updated_at": "2026-08-01T00:00:00Z"},
-                {"name": "b", "full_name": "octocat/b", "stargazers_count": 5, "forks_count": 0, "language": "Python", "fork": False, "updated_at": "2026-07-01T00:00:00Z"},
-                {"name": "fork-of-x", "full_name": "octocat/fork-of-x", "stargazers_count": 3, "forks_count": 1, "language": "Go", "fork": True, "updated_at": "2026-06-01T00:00:00Z"},
-                {"name": "d", "full_name": "octocat/d", "stargazers_count": 0, "forks_count": 0, "language": None, "fork": False, "updated_at": "2026-05-01T00:00:00Z"},
-            ])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "name": "a",
+                        "full_name": "octocat/a",
+                        "stargazers_count": 10,
+                        "forks_count": 2,
+                        "language": "Python",
+                        "fork": False,
+                        "updated_at": "2026-08-01T00:00:00Z",
+                    },
+                    {
+                        "name": "b",
+                        "full_name": "octocat/b",
+                        "stargazers_count": 5,
+                        "forks_count": 0,
+                        "language": "Python",
+                        "fork": False,
+                        "updated_at": "2026-07-01T00:00:00Z",
+                    },
+                    {
+                        "name": "fork-of-x",
+                        "full_name": "octocat/fork-of-x",
+                        "stargazers_count": 3,
+                        "forks_count": 1,
+                        "language": "Go",
+                        "fork": True,
+                        "updated_at": "2026-06-01T00:00:00Z",
+                    },
+                    {
+                        "name": "d",
+                        "full_name": "octocat/d",
+                        "stargazers_count": 0,
+                        "forks_count": 0,
+                        "language": None,
+                        "fork": False,
+                        "updated_at": "2026-05-01T00:00:00Z",
+                    },
+                ],
+            )
         if path == "/orgs/acme/repos":
             if request.url.params.get("page") != "1":
                 return httpx.Response(200, json=[])
             return httpx.Response(
                 200,
                 json=[
-                    {"name": "x", "stargazers_count": 100, "forks_count": 20, "language": "Rust", "fork": False},
-                    {"name": "y", "stargazers_count": 50, "forks_count": 5, "language": "Rust", "fork": False},
+                    {
+                        "name": "x",
+                        "stargazers_count": 100,
+                        "forks_count": 20,
+                        "language": "Rust",
+                        "fork": False,
+                    },
+                    {
+                        "name": "y",
+                        "stargazers_count": 50,
+                        "forks_count": 5,
+                        "language": "Rust",
+                        "fork": False,
+                    },
                 ],
             )
         return httpx.Response(404, json={"message": "not found"})
@@ -312,13 +379,24 @@ def test_analyze_pr_pending_reviews_no_submitted_at(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/repos/torvalds/linux/pulls/2":
-            return httpx.Response(200, json={
-                "number": 2, "title": "Pending PR", "state": "open",
-                "user": {"login": "octocat"}, "base": {"ref": "main"},
-                "head": {"ref": "feat/x"}, "additions": 1, "deletions": 0,
-                "changed_files": 1, "comments": 0, "review_comments": 0,
-                "created_at": "2026-08-01T00:00:00Z", "merged_at": None,
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "number": 2,
+                    "title": "Pending PR",
+                    "state": "open",
+                    "user": {"login": "octocat"},
+                    "base": {"ref": "main"},
+                    "head": {"ref": "feat/x"},
+                    "additions": 1,
+                    "deletions": 0,
+                    "changed_files": 1,
+                    "comments": 0,
+                    "review_comments": 0,
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "merged_at": None,
+                },
+            )
         if path == "/repos/torvalds/linux/pulls/2/reviews":
             return httpx.Response(200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}])
         if path == "/repos/torvalds/linux/pulls/2/files":
@@ -366,9 +444,7 @@ def test_summary_user_aggregates_all_repos(client):
 
 def test_summary_user_exclude_forks(client):
     h = {"X-GitHub-Token": "abc"}
-    r = client.get(
-        "/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h
-    )
+    r = client.get("/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h)
     assert r.status_code == 200
     body = r.json()
     assert body["repo_count"] == 3  # forked repo "c" dropped
@@ -401,9 +477,7 @@ def test_summary_caching_keyed_by_exclude_forks(client):
     assert client.counter["calls"] == calls_after_first
 
     # Different exclude_forks → distinct cache key, upstream refetched.
-    r3 = client.get(
-        "/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h
-    )
+    r3 = client.get("/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h)
     assert r3.json()["cached"] is False
     assert client.counter["calls"] > calls_after_first
 
@@ -442,7 +516,10 @@ def review_client(tmp_path):
 
 def test_review_pr_url(review_client):
     h = {"X-GitHub-Token": "abc"}
-    with patch("app.main.review_diff", return_value="## Summary\nLooks good.\n## Verdict\n✅ **Looks good**") as mock_rd:
+    with patch(
+        "app.main.review_diff",
+        return_value="## Summary\nLooks good.\n## Verdict\n✅ **Looks good**",
+    ) as mock_rd:
         r = review_client.get("/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h)
     assert r.status_code == 200
     body = r.json()
@@ -457,7 +534,9 @@ def test_review_caching(review_client):
     h = {"X-GitHub-Token": "abc"}
     with patch("app.main.review_diff", return_value="## Summary\nOK.") as mock_rd:
         review_client.get("/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h)
-        r2 = review_client.get("/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h)
+        r2 = review_client.get(
+            "/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h
+        )
     assert r2.json()["cached"] is True
     mock_rd.assert_called_once()  # only called once due to cache
 
@@ -501,7 +580,9 @@ def test_review_ollama_fallback(tmp_path):
 
     app.dependency_overrides[get_client] = override_client
     with TestClient(app) as c:
-        with patch("app.main.review_diff_ollama", return_value="## Summary\nOllama review.") as mock_ol:
+        with patch(
+            "app.main.review_diff_ollama", return_value="## Summary\nOllama review."
+        ) as mock_ol:
             r = c.get(
                 "/api/review?url=https://github.com/torvalds/linux/pull/1",
                 headers={"X-GitHub-Token": "abc"},
@@ -524,7 +605,10 @@ def test_review_ollama_connect_error_returns_502(tmp_path):
 
     app.dependency_overrides[get_client] = override_client
     with TestClient(app) as c:
-        with patch("app.main.review_diff_ollama", side_effect=RuntimeError("Cannot connect to Ollama at http://localhost:11434.")):
+        with patch(
+            "app.main.review_diff_ollama",
+            side_effect=RuntimeError("Cannot connect to Ollama at http://localhost:11434."),
+        ):
             r = c.get(
                 "/api/review?url=https://github.com/torvalds/linux/pull/1",
                 headers={"X-GitHub-Token": "abc"},
@@ -570,6 +654,7 @@ def test_config_no_go_backend(tmp_path):
 
 def test_config_with_go_backend(tmp_path):
     import dataclasses
+
     base = _settings(tmp_path)
     settings = dataclasses.replace(base, go_backend_url="http://localhost:8080")
     app = create_app(settings)
