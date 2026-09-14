@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  python:
     uses: flipslidersand-labs/qa-workflows/.github/workflows/python-test.yml@main
     with:
       python-version: "3.12"
