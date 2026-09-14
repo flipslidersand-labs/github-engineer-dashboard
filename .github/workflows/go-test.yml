@@ -1,0 +1,16 @@
+name: Go Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@main
+    with:
+      go-version: "1.25"
+      working-directory: "backend-go"
+      # backend-go has no _test.go files yet — threshold is 0 until tests are
+      # added (tracked separately; out of scope for "add CI").
+      coverage-threshold: 0
