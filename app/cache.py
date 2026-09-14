@@ -11,7 +11,8 @@ import json
 import sqlite3
 import threading
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 
 class SQLiteCache:
@@ -37,7 +38,7 @@ class SQLiteCache:
         )
         self._conn.commit()
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """Return the cached value, or None if missing or expired."""
         now = self._clock()
         with self._lock:
