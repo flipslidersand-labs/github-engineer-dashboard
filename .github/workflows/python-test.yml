@@ -1,0 +1,14 @@
+name: Python Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/python-test.yml@main
+    with:
+      python-version: "3.12"
+      install-command: "pip install -r requirements.txt"
+      coverage-threshold: 85

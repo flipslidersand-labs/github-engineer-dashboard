@@ -17,9 +17,7 @@ def test_get_rate_limit_parses_core():
         return httpx.Response(
             200,
             json={
-                "resources": {
-                    "core": {"limit": 5000, "remaining": 4999, "used": 1, "reset": 111}
-                }
+                "resources": {"core": {"limit": 5000, "remaining": 4999, "used": 1, "reset": 111}}
             },
         )
 

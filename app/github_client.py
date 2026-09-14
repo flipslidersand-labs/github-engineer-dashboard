@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 from collections import Counter
-from typing import Optional
 
 import httpx
 
@@ -27,7 +26,7 @@ class GitHubClient:
         token: str,
         base_url: str = "https://api.github.com",
         *,
-        client: Optional[httpx.Client] = None,
+        client: httpx.Client | None = None,
         timeout: float = 10.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -41,9 +40,7 @@ class GitHubClient:
     def _get(self, path: str) -> httpx.Response:
         resp = self._client.get(f"{self._base_url}{path}", headers=self._headers)
         if resp.status_code >= 400:
-            message = (
-                resp.json().get("message", resp.text) if resp.content else resp.text
-            )
+            message = resp.json().get("message", resp.text) if resp.content else resp.text
             raise GitHubError(resp.status_code, message)
         return resp
 
@@ -96,12 +93,14 @@ class GitHubClient:
                 if r.get("language"):
                     lang_counts[r["language"]] += 1
             else:
-                recent_forks.append({
-                    "name": r["name"],
-                    "full_name": r.get("full_name", ""),
-                    "stars": r.get("stargazers_count", 0),
-                    "updated_at": r.get("updated_at", ""),
-                })
+                recent_forks.append(
+                    {
+                        "name": r["name"],
+                        "full_name": r.get("full_name", ""),
+                        "stars": r.get("stargazers_count", 0),
+                        "updated_at": r.get("updated_at", ""),
+                    }
+                )
         repo_languages = dict(lang_counts.most_common(8))
         recent_forks = sorted(recent_forks, key=lambda x: x["updated_at"], reverse=True)[:3]
 
@@ -209,7 +208,9 @@ class GitHubClient:
             if parsed_times:
                 try:
                     created = datetime.fromisoformat(pr["created_at"].replace("Z", "+00:00"))
-                    review_wait_hours = round((min(parsed_times) - created).total_seconds() / 3600, 1)
+                    review_wait_hours = round(
+                        (min(parsed_times) - created).total_seconds() / 3600, 1
+                    )
                 except Exception:
                     pass
 
@@ -251,15 +252,17 @@ class GitHubClient:
             timeline = self._get(
                 f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
             ).json()
-            related_prs = list({
-                event["source"]["issue"]["number"]
-                for event in timeline
-                if (
-                    isinstance(event, dict)
-                    and event.get("event") == "cross-referenced"
-                    and event.get("source", {}).get("issue", {}).get("pull_request")
-                )
-            })
+            related_prs = list(
+                {
+                    event["source"]["issue"]["number"]
+                    for event in timeline
+                    if (
+                        isinstance(event, dict)
+                        and event.get("event") == "cross-referenced"
+                        and event.get("source", {}).get("issue", {}).get("pull_request")
+                    )
+                }
+            )
         except GitHubError:
             related_prs = []
 
@@ -325,9 +328,7 @@ class GitHubClient:
             "truncated": truncated,
         }
 
-    def get_user_repos_summary(
-        self, username: str, *, exclude_forks: bool = False
-    ) -> dict:
+    def get_user_repos_summary(self, username: str, *, exclude_forks: bool = False) -> dict:
         """Aggregate stars / forks / language distribution across a user's repos."""
         data = self._aggregate_repo_list(f"/users/{username}/repos", exclude_forks)
         return {**data, "owner": username, "owner_type": "user"}
