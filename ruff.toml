@@ -1,4 +1,5 @@
 line-length = 100
+extend-exclude = ["*.md", "backend-go"]
 
 [lint]
 select = ["E", "F", "I", "W"]
