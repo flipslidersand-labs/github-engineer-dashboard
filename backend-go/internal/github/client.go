@@ -602,8 +602,15 @@ func (c *Client) aggregateRepoList(basePath string, excludeForks bool) (*model.C
 
 	for page := 1; page <= reposMaxPages; page++ {
 		path := fmt.Sprintf("%s%sper_page=%d&page=%d", basePath, sep, reposPageSize, page)
+		data, err := c.get(path)
+		if err != nil {
+			return nil, false, err
+		}
 		var batch []ghRepo
-		if !c.tryGet(path, &batch) || len(batch) == 0 {
+		if err := json.Unmarshal(data, &batch); err != nil {
+			return nil, false, err
+		}
+		if len(batch) == 0 {
 			break
 		}
 		allRepos = append(allRepos, batch...)
