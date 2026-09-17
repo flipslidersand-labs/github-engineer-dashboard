@@ -248,23 +248,20 @@ class GitHubClient:
         """Return structured data for an issue."""
         issue = self._get(f"/repos/{username}/{repo}/issues/{number}").json()
 
-        try:
-            timeline = self._get(
-                f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
-            ).json()
-            related_prs = list(
-                {
-                    event["source"]["issue"]["number"]
-                    for event in timeline
-                    if (
-                        isinstance(event, dict)
-                        and event.get("event") == "cross-referenced"
-                        and event.get("source", {}).get("issue", {}).get("pull_request")
-                    )
-                }
-            )
-        except GitHubError:
-            related_prs = []
+        timeline = self._try_get_json(
+            f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
+        )
+        related_prs = list(
+            {
+                event["source"]["issue"]["number"]
+                for event in (timeline or [])
+                if (
+                    isinstance(event, dict)
+                    and event.get("event") == "cross-referenced"
+                    and event.get("source", {}).get("issue", {}).get("pull_request")
+                )
+            }
+        )
 
         return {
             "number": issue["number"],
