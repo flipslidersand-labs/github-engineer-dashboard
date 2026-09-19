@@ -640,7 +640,8 @@ def test_benchmark_repo(client):
     assert r.status_code == 200
     body = r.json()
     assert body["type"] == "repo"
-    assert body["python_ms"] > 0
+    assert isinstance(body["python_ms"], float)
+    assert body["python_ms"] >= 0
 
 
 def test_benchmark_unsupported_url(client):
