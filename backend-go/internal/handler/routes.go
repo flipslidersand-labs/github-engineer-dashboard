@@ -244,7 +244,7 @@ func parseGitHubURL(raw string) parsedURL {
 	}
 	if len(parts) >= 4 {
 		n, err := strconv.Atoi(parts[3])
-		if err == nil {
+		if err == nil && n > 0 {
 			switch parts[2] {
 			case "pull":
 				return parsedURL{typ: urlTypePR, username: parts[0], repo: parts[1], number: n}
