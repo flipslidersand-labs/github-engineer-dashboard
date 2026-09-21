@@ -38,15 +38,25 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New creates a Client. If baseURL is empty, the public GitHub API is used.
+// New creates a Client with its own dedicated *http.Client. Prefer
+// NewWithClient across requests in a long-running server so connections to
+// GitHub are pooled instead of a fresh TCP/TLS handshake per Client.
 func New(token, baseURL string) *Client {
+	return NewWithClient(token, baseURL, &http.Client{Timeout: 10 * time.Second})
+}
+
+// NewWithClient creates a Client backed by an existing *http.Client, letting
+// callers share one connection-pooled client across many Client instances
+// (e.g. one per request, each with a different token) instead of paying for
+// a new TCP/TLS handshake to api.github.com on every request.
+func NewWithClient(token, baseURL string, httpClient *http.Client) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	return &Client{
 		token:      token,
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: httpClient,
 	}
 }
 

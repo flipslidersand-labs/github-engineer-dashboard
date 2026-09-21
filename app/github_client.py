@@ -35,6 +35,9 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        # A shared/injected client outlives this GitHubClient (it's reused
+        # across requests for connection pooling) and must not be closed here.
+        self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout)
 
     def _get(self, path: str) -> httpx.Response:
@@ -339,4 +342,5 @@ class GitHubClient:
         return {**data, "owner": org, "owner_type": "org"}
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()

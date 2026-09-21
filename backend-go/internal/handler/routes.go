@@ -23,6 +23,10 @@ type Deps struct {
 	Cache        *cache.Cache
 	GithubToken  string
 	GithubAPIURL string
+	// HTTPClient is shared across all requests so GitHub API calls reuse
+	// pooled connections instead of a fresh TCP/TLS handshake per request.
+	// Falls back to gh.New's own client if left nil (e.g. in older tests).
+	HTTPClient *http.Client
 }
 
 // Register mounts all routes on r.
@@ -58,6 +62,9 @@ func newClient(r *http.Request, d *Deps) *gh.Client {
 	token := r.Header.Get("X-GitHub-Token")
 	if token == "" {
 		token = d.GithubToken
+	}
+	if d.HTTPClient != nil {
+		return gh.NewWithClient(token, d.GithubAPIURL, d.HTTPClient)
 	}
 	return gh.New(token, d.GithubAPIURL)
 }
