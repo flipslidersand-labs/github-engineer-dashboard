@@ -163,7 +163,7 @@ def _register_routes(app: FastAPI) -> None:
     ) -> UserActivity:
         return _cache_fetch(
             cache,
-            f"activity:{username.lower()}",
+            f"{client.token_fingerprint}:activity:{username.lower()}",
             lambda: client.get_user_activity(username),
             UserActivity,
         )
@@ -189,7 +189,7 @@ def _register_routes(app: FastAPI) -> None:
                 detail="Summary requires a GitHub user or organization URL.",
             )
 
-        key = f"summary:{owner_key}:forks={int(exclude_forks)}"
+        key = f"{client.token_fingerprint}:summary:{owner_key}:forks={int(exclude_forks)}"
         if parsed.type == UrlType.USER:
             return _cache_fetch(
                 cache,
@@ -216,7 +216,7 @@ def _register_routes(app: FastAPI) -> None:
             username = parsed.params["username"]
             data = _cache_fetch(
                 cache,
-                f"activity:{username.lower()}",
+                f"{client.token_fingerprint}:activity:{username.lower()}",
                 lambda: client.get_user_activity(username),
                 UserActivity,
             )
@@ -227,7 +227,7 @@ def _register_routes(app: FastAPI) -> None:
             repo = parsed.params["repo"]
             data = _cache_fetch(
                 cache,
-                f"repo:{username.lower()}/{repo.lower()}",
+                f"{client.token_fingerprint}:repo:{username.lower()}/{repo.lower()}",
                 lambda: client.get_repo(username, repo),
                 RepoInfo,
             )
@@ -239,7 +239,7 @@ def _register_routes(app: FastAPI) -> None:
             number = int(parsed.params["number"])
             data = _cache_fetch(
                 cache,
-                f"pr:{username.lower()}/{repo.lower()}/{number}",
+                f"{client.token_fingerprint}:pr:{username.lower()}/{repo.lower()}/{number}",
                 lambda: client.get_pr(username, repo, number),
                 PRInfo,
             )
@@ -251,7 +251,7 @@ def _register_routes(app: FastAPI) -> None:
             number = int(parsed.params["number"])
             data = _cache_fetch(
                 cache,
-                f"issue:{username.lower()}/{repo.lower()}/{number}",
+                f"{client.token_fingerprint}:issue:{username.lower()}/{repo.lower()}/{number}",
                 lambda: client.get_issue(username, repo, number),
                 IssueInfo,
             )
@@ -283,7 +283,7 @@ def _register_routes(app: FastAPI) -> None:
         repo = parsed.params["repo"]
         number = int(parsed.params["number"])
 
-        cache_key = f"review:{username.lower()}/{repo.lower()}/{number}"
+        cache_key = f"{client.token_fingerprint}:review:{username.lower()}/{repo.lower()}/{number}"
         cached = cache.get(cache_key)
         if cached is not None:
             return ReviewResult(**{**cached, "cached": True})

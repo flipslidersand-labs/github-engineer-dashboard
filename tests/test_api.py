@@ -30,7 +30,7 @@ def _settings(
     )
 
 
-def _mock_github(counter: dict) -> GitHubClient:
+def _mock_github(counter: dict, token: str = "test-token") -> GitHubClient:
     def handler(request: httpx.Request) -> httpx.Response:
         counter["calls"] = counter.get("calls", 0) + 1
         path = request.url.path
@@ -237,7 +237,7 @@ def _mock_github(counter: dict) -> GitHubClient:
         return httpx.Response(404, json={"message": "not found"})
 
     http = httpx.Client(transport=httpx.MockTransport(handler))
-    return GitHubClient("test-token", client=http)
+    return GitHubClient(token, client=http)
 
 
 @pytest.fixture()
@@ -247,7 +247,7 @@ def client(tmp_path):
 
     # Override the GitHub client but keep require_token so auth is still enforced.
     def override_client(_token: str = Depends(require_token)):
-        gh = _mock_github(counter)
+        gh = _mock_github(counter, token=_token)
         try:
             yield gh
         finally:
@@ -346,6 +346,24 @@ def test_analyze_repo_caching(client):
     r2 = client.get("/api/analyze?url=https://github.com/torvalds/linux", headers=h)
     assert r2.json()["data"]["cached"] is True
     assert client.counter["calls"] == calls_after_first
+
+
+def test_analyze_cache_is_scoped_per_token(client):
+    """A different token must never hit another token's cache entry for the
+    same URL — otherwise a token without real access to a private repo could
+    read data cached by a token that does (Issue #130)."""
+    url = "https://github.com/torvalds/linux"
+    r1 = client.get(f"/api/analyze?url={url}", headers={"X-GitHub-Token": "token-a"})
+    calls_after_first = client.counter["calls"]
+    assert r1.json()["data"]["cached"] is False
+
+    r2 = client.get(f"/api/analyze?url={url}", headers={"X-GitHub-Token": "token-b"})
+    assert r2.json()["data"]["cached"] is False
+    assert client.counter["calls"] > calls_after_first  # a real fetch happened, not a cache hit
+
+    # Same token as the first request should still hit its own cache entry.
+    r3 = client.get(f"/api/analyze?url={url}", headers={"X-GitHub-Token": "token-a"})
+    assert r3.json()["data"]["cached"] is True
 
 
 def test_analyze_unknown_url_returns_422(client):
@@ -506,7 +524,7 @@ def review_client(tmp_path):
     app = create_app(_settings(tmp_path, anthropic_key="test-anthropic-key"))
 
     def override_client(_token: str = Depends(require_token)):
-        gh = _mock_github(counter)
+        gh = _mock_github(counter, token=_token)
         try:
             yield gh
         finally:
@@ -556,7 +574,7 @@ def test_review_unavailable_without_any_key(tmp_path):
     counter: dict = {}
 
     def override_client(_token: str = Depends(require_token)):
-        gh = _mock_github(counter)
+        gh = _mock_github(counter, token=_token)
         try:
             yield gh
         finally:
@@ -576,7 +594,7 @@ def test_review_ollama_fallback(tmp_path):
     counter: dict = {}
 
     def override_client(_token: str = Depends(require_token)):
-        gh = _mock_github(counter)
+        gh = _mock_github(counter, token=_token)
         try:
             yield gh
         finally:
@@ -601,7 +619,7 @@ def test_review_ollama_connect_error_returns_502(tmp_path):
     counter: dict = {}
 
     def override_client(_token: str = Depends(require_token)):
-        gh = _mock_github(counter)
+        gh = _mock_github(counter, token=_token)
         try:
             yield gh
         finally:
