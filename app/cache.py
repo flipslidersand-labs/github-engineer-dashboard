@@ -26,6 +26,8 @@ class SQLiteCache:
         self._ttl = ttl_seconds
         self._clock = clock
         self._lock = threading.Lock()
+        self._key_locks: dict[str, threading.Lock] = {}
+        self._key_locks_guard = threading.Lock()
         # check_same_thread=False: FastAPI serves requests across a threadpool;
         # a process-wide lock serializes access to this single connection.
         self._conn = sqlite3.connect(path, check_same_thread=False)
@@ -65,6 +67,21 @@ class SQLiteCache:
                 (key, payload, expires_at),
             )
             self._conn.commit()
+
+    def lock_for(self, key: str) -> threading.Lock:
+        """Return a lock scoped to `key`, creating it on first use.
+
+        Callers use this to deduplicate concurrent fetches for the same key
+        (double-checked locking: re-check `get()` after acquiring) instead of
+        letting simultaneous cache-miss requests all re-run `fetch_fn` — that
+        matters most where the fetch is a paid LLM call (see /api/review).
+        """
+        with self._key_locks_guard:
+            lock = self._key_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._key_locks[key] = lock
+            return lock
 
     def close(self) -> None:
         with self._lock:
