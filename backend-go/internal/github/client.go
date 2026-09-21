@@ -2,6 +2,8 @@
 package github
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,14 @@ type Client struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
+	// TokenFingerprint identifies this client's token without exposing it.
+	// Callers must scope any cache key by this value — without it, a
+	// response fetched with one token gets cached under a
+	// token-independent key and served to any other caller presenting a
+	// *different* token for the same URL within the TTL window, a
+	// cross-tenant private-data leak on a shared dashboard instance
+	// (Issue #130).
+	TokenFingerprint string
 }
 
 // New creates a Client. If baseURL is empty, the public GitHub API is used.
@@ -43,10 +53,12 @@ func New(token, baseURL string) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	sum := sha256.Sum256([]byte(token))
 	return &Client{
-		token:      token,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		token:            token,
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		httpClient:       &http.Client{Timeout: 10 * time.Second},
+		TokenFingerprint: hex.EncodeToString(sum[:])[:16],
 	}
 }
 
