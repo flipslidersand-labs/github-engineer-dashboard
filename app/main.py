@@ -119,14 +119,22 @@ def get_client(
 
 
 def _cache_fetch(cache, key: str, fetch_fn, model):
-    """Return model from cache, or call fetch_fn(), store, and return fresh."""
+    """Return model from cache, or call fetch_fn(), store, and return fresh.
+
+    Concurrent misses for the same key serialize on a per-key lock so
+    fetch_fn runs once, not once per simultaneous request.
+    """
     cached_data = cache.get(key)
     if cached_data is not None:
         return model(**{**cached_data, "cached": True})
-    raw = fetch_fn()
-    result = model(**{**raw, "cached": False})
-    cache.set(key, raw)
-    return result
+    with cache.lock_for(key):
+        cached_data = cache.get(key)
+        if cached_data is not None:
+            return model(**{**cached_data, "cached": True})
+        raw = fetch_fn()
+        result = model(**{**raw, "cached": False})
+        cache.set(key, raw)
+        return result
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -288,24 +296,34 @@ def _register_routes(app: FastAPI) -> None:
         if cached is not None:
             return ReviewResult(**{**cached, "cached": True})
 
-        pr_meta = client.get_pr(username, repo, number)
-        diff = client.get_pr_diff(username, repo, number)
-        try:
-            if settings.anthropic_api_key:
-                markdown = review_diff(diff, settings.anthropic_api_key)
-            else:
-                markdown = review_diff_ollama(diff, settings.ollama_base_url, settings.ollama_model)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+        # Serialize concurrent misses for the same PR: the review call is a
+        # paid LLM request, so two simultaneous requests for the same PR must
+        # not trigger two of them.
+        with cache.lock_for(cache_key):
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return ReviewResult(**{**cached, "cached": True})
 
-        raw = {
-            "url": url,
-            "pr_number": number,
-            "pr_title": pr_meta["title"],
-            "markdown": markdown,
-        }
-        cache.set(cache_key, raw)
-        return ReviewResult(**{**raw, "cached": False})
+            pr_meta = client.get_pr(username, repo, number)
+            diff = client.get_pr_diff(username, repo, number)
+            try:
+                if settings.anthropic_api_key:
+                    markdown = review_diff(diff, settings.anthropic_api_key)
+                else:
+                    markdown = review_diff_ollama(
+                        diff, settings.ollama_base_url, settings.ollama_model
+                    )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=502, detail=str(exc))
+
+            raw = {
+                "url": url,
+                "pr_number": number,
+                "pr_title": pr_meta["title"],
+                "markdown": markdown,
+            }
+            cache.set(cache_key, raw)
+            return ReviewResult(**{**raw, "cached": False})
 
     @app.get("/api/benchmark", response_model=BenchmarkResult, tags=["github"])
     def benchmark(
