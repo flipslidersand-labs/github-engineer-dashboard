@@ -72,3 +72,18 @@ def test_error_raises_github_error():
         client.get_user_activity("ghost")
     assert exc.value.status_code == 404
     assert "Not Found" in exc.value.message
+
+
+def test_close_does_not_close_injected_client():
+    """An injected (shared, connection-pooled) client must survive close() —
+    it's reused across requests, unlike a client GitHubClient creates itself."""
+    shared = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    gh = GitHubClient("token", client=shared)
+    gh.close()
+    assert not shared.is_closed
+
+
+def test_close_closes_own_client():
+    gh = GitHubClient("token")
+    gh.close()
+    assert gh._client.is_closed
