@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 from collections import Counter
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubError(Exception):
@@ -137,10 +140,32 @@ class GitHubClient:
             f_rel = pool.submit(self._try_get_json, f"{base}/releases/latest")
             f_part = pool.submit(self._try_get_json, f"{base}/stats/participation")
             raw_contributors = f_contrib.result()
-            languages = f_langs.result() or {}
+            raw_languages = f_langs.result()
             open_prs_raw = f_prs.result()
             rel = f_rel.result()
             participation = f_part.result()
+            languages = raw_languages or {}
+
+        # latest_release/participation are excluded: GitHub legitimately 404s
+        # /releases/latest for repos with no releases, and /stats/participation
+        # can 202 with an empty body while GitHub computes it — None there is
+        # an expected state, not evidence of a degraded fetch.
+        failed = [
+            name
+            for name, value in (
+                ("contributors", raw_contributors),
+                ("languages", raw_languages),
+                ("open_prs", open_prs_raw),
+            )
+            if value is None
+        ]
+        if failed:
+            logger.warning(
+                "get_repo(%s/%s): partial data, failed sub-fetches: %s",
+                username,
+                repo,
+                ", ".join(failed),
+            )
 
         contributors = [
             {
@@ -180,6 +205,7 @@ class GitHubClient:
             "latest_release": latest_release,
             "latest_release_at": latest_release_at,
             "commits_last_30d": commits_last_30d,
+            "partial": bool(failed),
         }
 
     def get_pr(self, username: str, repo: str, number: int) -> dict:
