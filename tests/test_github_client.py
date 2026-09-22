@@ -87,3 +87,29 @@ def test_close_closes_own_client():
     gh = GitHubClient("token")
     gh.close()
     assert gh._client.is_closed
+
+
+def test_get_pr_diff_returns_full_diff_under_limit():
+    body = "diff --git a/foo.py b/foo.py\n+print('hello')\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octocat/hello/pulls/1"
+        assert request.headers["Accept"] == "application/vnd.github.v3.diff"
+        return httpx.Response(200, text=body)
+
+    client = make_client(handler)
+    diff = client.get_pr_diff("octocat", "hello", 1)
+    assert diff == body
+
+
+def test_get_pr_diff_truncates_at_max_bytes():
+    body = "x" * 1000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    client = make_client(handler)
+    diff = client.get_pr_diff("octocat", "hello", 1, max_bytes=100)
+    assert diff.startswith("x" * 100)
+    assert "truncated" in diff
+    assert len(diff) < len(body)
