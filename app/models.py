@@ -72,6 +72,7 @@ class RepoInfo(BaseModel):
     latest_release: str | None = None
     latest_release_at: str | None = None
     commits_last_30d: int | None = None
+    partial: bool = False
     cached: bool = False
 
 
