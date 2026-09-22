@@ -270,6 +270,12 @@ func parseGitHubURL(raw string) parsedURL {
 // request — important where the "fetch" is a paid LLM call (see /api/review).
 var fetchGroup singleflight.Group
 
+// partialResult is implemented by response types that can be built from an
+// incomplete set of sub-fetches and therefore should not be cached as-is.
+type partialResult interface {
+	IsPartial() bool
+}
+
 func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T, bool, error) {
 	var dst T
 	if c.Get(key, &dst) {
@@ -286,7 +292,9 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 		if err != nil {
 			return nil, err
 		}
-		_ = c.Set(key, result)
+		if p, ok := any(result).(partialResult); !ok || !p.IsPartial() {
+			_ = c.Set(key, result)
+		}
 		return result, nil
 	})
 	if err != nil {

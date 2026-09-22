@@ -133,7 +133,8 @@ def _cache_fetch(cache, key: str, fetch_fn, model):
             return model(**{**cached_data, "cached": True})
         raw = fetch_fn()
         result = model(**{**raw, "cached": False})
-        cache.set(key, raw)
+        if not raw.get("partial"):
+            cache.set(key, raw)
         return result
 
 
