@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -290,16 +291,32 @@ func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.Rep
 		openPRs       []json.RawMessage
 		release       ghRelease
 		participation ghParticipation
+		okContribs    bool
+		okLanguages   bool
+		okOpenPRs     bool
 		wg            sync.WaitGroup
 	)
 
 	wg.Add(5)
-	go func() { defer wg.Done(); c.tryGet(ctx, base+"/contributors?per_page=5", &rawContribs) }()
-	go func() { defer wg.Done(); c.tryGet(ctx, base+"/languages", &languages) }()
-	go func() { defer wg.Done(); c.tryGet(ctx, base+"/pulls?state=open&per_page=100", &openPRs) }()
+	go func() { defer wg.Done(); okContribs = c.tryGet(ctx, base+"/contributors?per_page=5", &rawContribs) }()
+	go func() { defer wg.Done(); okLanguages = c.tryGet(ctx, base+"/languages", &languages) }()
+	go func() { defer wg.Done(); okOpenPRs = c.tryGet(ctx, base+"/pulls?state=open&per_page=100", &openPRs) }()
 	go func() { defer wg.Done(); c.tryGet(ctx, base+"/releases/latest", &release) }()
 	go func() { defer wg.Done(); c.tryGet(ctx, base+"/stats/participation", &participation) }()
 	wg.Wait()
+
+	// releases/latest and stats/participation are excluded from partial
+	// detection: GitHub legitimately 404s the former for repos with no
+	// releases, and the latter can return an empty body while GitHub computes
+	// it — tryGet returning false there is an expected state, not evidence of
+	// a degraded fetch.
+	partial := !okContribs || !okLanguages || !okOpenPRs
+	if partial {
+		log.Printf(
+			"GetRepo(%s/%s): partial data, contributors=%v languages=%v open_prs=%v",
+			username, repo, okContribs, okLanguages, okOpenPRs,
+		)
+	}
 
 	contributors := make([]model.Contributor, 0, len(rawContribs))
 	for _, c := range rawContribs {
@@ -360,6 +377,7 @@ func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.Rep
 		LatestRelease:   latestRelease,
 		LatestReleaseAt: latestReleaseAt,
 		CommitsLast30d:  commitsLast30d,
+		Partial:         partial,
 	}, nil
 }
 
