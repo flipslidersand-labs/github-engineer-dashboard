@@ -292,6 +292,12 @@ func parseGitHubURL(raw string) parsedURL {
 
 // fromCache returns cached data (wasCached=true) or calls fetch, stores result,
 // and returns fresh data (wasCached=false). On fetch error returns nil, false, err.
+// partialResult is implemented by response types that can be built from an
+// incomplete set of sub-fetches and therefore should not be cached as-is.
+type partialResult interface {
+	IsPartial() bool
+}
+
 func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T, bool, error) {
 	var dst T
 	if c.Get(key, &dst) {
@@ -301,7 +307,9 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 	if err != nil {
 		return nil, false, err
 	}
-	_ = c.Set(key, v)
+	if p, ok := any(v).(partialResult); !ok || !p.IsPartial() {
+		_ = c.Set(key, v)
+	}
 	return v, false, nil
 }
 
