@@ -12,3 +12,8 @@ jobs:
       python-version: "3.12"
       install-command: "pip install -r requirements.txt"
       coverage-threshold: 85
+      ruff-version: "0.15.18"
+      # The self-hosted runner image carries a stale pytest-asyncio install from
+      # another repo; this project has no async tests, so disable its autoload
+      # rather than depend on runner state (Issue #122).
+      pytest-args: "-p no:asyncio"
