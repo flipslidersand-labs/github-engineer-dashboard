@@ -70,8 +70,13 @@ type RepoInfo struct {
 	LatestRelease   *string       `json:"latest_release"`
 	LatestReleaseAt *string       `json:"latest_release_at"`
 	CommitsLast30d  *int          `json:"commits_last_30d"`
+	Partial         bool          `json:"partial"`
 	Cached          bool          `json:"cached"`
 }
+
+// IsPartial reports whether this result was built from an incomplete set of
+// sub-fetches and should not be cached as-is.
+func (r *RepoInfo) IsPartial() bool { return r.Partial }
 
 type PRInfo struct {
 	Number            int           `json:"number"`
