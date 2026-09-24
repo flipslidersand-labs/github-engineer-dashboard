@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import logging
 from collections import Counter
 
@@ -39,6 +40,13 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         self._client = client or httpx.Client(timeout=timeout)
+        # Cache keys must be scoped per-token: without this, a response
+        # fetched with one token gets cached under a token-independent key
+        # (e.g. "repo:owner/name") and served to any other caller presenting
+        # a *different* token for the same URL within the TTL window — a
+        # cross-tenant private-data leak on a shared dashboard instance
+        # (Issue #130). Never store the raw token itself as a cache key.
+        self.token_fingerprint = hashlib.sha256(token.encode()).hexdigest()[:16]
 
     def _get(self, path: str) -> httpx.Response:
         resp = self._client.get(f"{self._base_url}{path}", headers=self._headers)

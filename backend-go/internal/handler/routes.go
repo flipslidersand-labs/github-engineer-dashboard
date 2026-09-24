@@ -81,7 +81,7 @@ func (d *Deps) rateLimit(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) userActivity(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	client := newClient(r, d)
-	v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(username),
+	v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(username),
 		func() (*model.UserActivity, error) { return client.GetUserActivity(username) })
 	if err != nil {
 		writeGitHubError(w, err)
@@ -112,7 +112,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	switch parsed.typ {
 	case urlTypeUser:
 		u := parsed.username
-		v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(u),
+		v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(u),
 			func() (*model.UserActivity, error) { return client.GetUserActivity(u) })
 		if err == nil {
 			v.Cached = cached
@@ -121,7 +121,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypeRepo:
 		u, repo := parsed.username, parsed.repo
-		key := fmt.Sprintf("repo:%s/%s", strings.ToLower(u), strings.ToLower(repo))
+		key := fmt.Sprintf("%s:repo:%s/%s", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo))
 		v, cached, err := fromCache(d.Cache, key,
 			func() (*model.RepoInfo, error) { return client.GetRepo(u, repo) })
 		if err == nil {
@@ -131,7 +131,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypePR:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
-		key := fmt.Sprintf("pr:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
+		key := fmt.Sprintf("%s:pr:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
 			func() (*model.PRInfo, error) { return client.GetPR(u, repo, num) })
 		if err == nil {
@@ -141,7 +141,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypeIssue:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
-		key := fmt.Sprintf("issue:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
+		key := fmt.Sprintf("%s:issue:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
 			func() (*model.IssueInfo, error) { return client.GetIssue(u, repo, num) })
 		if err == nil {
@@ -178,7 +178,7 @@ func (d *Deps) summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := fmt.Sprintf("summary:%s:forks=%d", ownerKey, boolToInt(excludeForks))
+	key := fmt.Sprintf("%s:summary:%s:forks=%d", client.TokenFingerprint, ownerKey, boolToInt(excludeForks))
 	var fetchFn func() (*model.CrossRepoSummary, error)
 	if parsed.typ == urlTypeUser {
 		fetchFn = func() (*model.CrossRepoSummary, error) {
