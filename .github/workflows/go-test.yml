@@ -11,6 +11,8 @@ jobs:
     with:
       go-version: "1.25"
       working-directory: "backend-go"
-      # backend-go has no _test.go files yet — threshold is 0 until tests are
-      # added (tracked separately; out of scope for "add CI").
-      coverage-threshold: 0
+      # First real threshold now that internal/{cache,github,handler} have
+      # tests (Issue #127; measured ~45%). model/ is plain structs with no
+      # logic, so it's excluded from the denominator naturally (no test file
+      # needed). Raise this incrementally as coverage grows.
+      coverage-threshold: 40
