@@ -21,7 +21,11 @@ class Settings:
 
     @staticmethod
     def from_env() -> Settings:
-        origins = os.environ.get("CORS_ORIGINS", "*")
+        # Default to no cross-origin access: GITHUB_TOKEN fallback (below) means an
+        # open CORS_ORIGINS="*" default would let any third-party site ride on the
+        # operator's server-side token (see Issue #123). Operators must opt in
+        # explicitly via CORS_ORIGINS.
+        origins = os.environ.get("CORS_ORIGINS", "")
         return Settings(
             github_api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
             github_token=(os.environ.get("GITHUB_TOKEN") or None),
