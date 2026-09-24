@@ -149,6 +149,7 @@ class BenchmarkResult(BaseModel):
     go_ms: float | None = None
     speedup: float | None = None  # python_ms / go_ms; >1 means Go is faster
     go_available: bool = False
+    go_error: str | None = None  # set when go_backend_url was configured but the call failed
 
 
 class Health(BaseModel):
