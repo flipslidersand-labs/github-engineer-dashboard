@@ -158,6 +158,10 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) summary(w http.ResponseWriter, r *http.Request) {
 	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		writeError(w, http.StatusUnprocessableEntity, "url query parameter required")
+		return
+	}
 	excludeForks := r.URL.Query().Get("exclude_forks") == "true"
 
 	parsed := parseGitHubURL(rawURL)
