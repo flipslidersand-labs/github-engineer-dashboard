@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/flipslidersand/github-engineer-dashboard/backend-go/internal/cache"
 	gh "github.com/flipslidersand/github-engineer-dashboard/backend-go/internal/github"
@@ -267,6 +268,12 @@ func parseGitHubURL(raw string) parsedURL {
 
 // fromCache returns cached data (wasCached=true) or calls fetch, stores result,
 // and returns fresh data (wasCached=false). On fetch error returns nil, false, err.
+// fetchGroup deduplicates concurrent fetches for the same cache key so that
+// simultaneous requests for the same resource (e.g. two people opening the
+// same PR review at once) trigger a single upstream call instead of one per
+// request — important where the "fetch" is a paid LLM call (see /api/review).
+var fetchGroup singleflight.Group
+
 // partialResult is implemented by response types that can be built from an
 // incomplete set of sub-fetches and therefore should not be cached as-is.
 type partialResult interface {
@@ -278,14 +285,26 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 	if c.Get(key, &dst) {
 		return &dst, true, nil
 	}
-	v, err := fetch()
+	v, err, _ := fetchGroup.Do(key, func() (any, error) {
+		// Re-check: another goroutine may have populated the cache while we
+		// were waiting for our turn to run fetch().
+		var dst2 T
+		if c.Get(key, &dst2) {
+			return &dst2, nil
+		}
+		result, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		if p, ok := any(result).(partialResult); !ok || !p.IsPartial() {
+			_ = c.Set(key, result)
+		}
+		return result, nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	if p, ok := any(v).(partialResult); !ok || !p.IsPartial() {
-		_ = c.Set(key, v)
-	}
-	return v, false, nil
+	return v.(*T), false, nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
