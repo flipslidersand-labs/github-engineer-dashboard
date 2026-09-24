@@ -305,16 +305,41 @@ class GitHubClient:
             "closed_at": issue.get("closed_at"),
         }
 
-    def get_pr_diff(self, username: str, repo: str, number: int) -> str:
-        """Return the raw unified diff for a pull request."""
-        resp = self._client.get(
-            f"{self._base_url}/repos/{username}/{repo}/pulls/{number}",
-            headers={**self._headers, "Accept": "application/vnd.github.v3.diff"},
-        )
-        if resp.status_code >= 400:
-            message = resp.json().get("message", resp.text) if resp.content else resp.text
-            raise GitHubError(resp.status_code, message)
-        return resp.text
+    def get_pr_diff(self, username: str, repo: str, number: int, max_bytes: int = 200_000) -> str:
+        """Return the unified diff for a pull request, capped at max_bytes.
+
+        The diff endpoint has no documented size limit — vendored changes,
+        generated files, or large refactors can push it into the megabytes —
+        while reviewer._truncate() only ever uses the first few thousand
+        characters. Stream and stop reading once max_bytes is hit instead of
+        buffering the whole thing just to discard almost all of it.
+        """
+        url = f"{self._base_url}/repos/{username}/{repo}/pulls/{number}"
+        headers = {**self._headers, "Accept": "application/vnd.github.v3.diff"}
+        chunks: list[bytes] = []
+        total = 0
+        truncated = False
+        with self._client.stream("GET", url, headers=headers) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                message = resp.json().get("message", resp.text) if resp.content else resp.text
+                raise GitHubError(resp.status_code, message)
+            for chunk in resp.iter_bytes():
+                remaining = max_bytes - total
+                if len(chunk) > remaining:
+                    chunks.append(chunk[:remaining])
+                    total += remaining
+                    truncated = True
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= max_bytes:
+                    truncated = True
+                    break
+        diff = b"".join(chunks).decode("utf-8", errors="replace")
+        if truncated:
+            diff += f"\n\n… (diff fetch truncated at {max_bytes} bytes)"
+        return diff
 
     def _aggregate_repo_list(self, base_path: str, exclude_forks: bool) -> dict:
         """Paginate an owner's repo list and aggregate stars / forks / languages.
