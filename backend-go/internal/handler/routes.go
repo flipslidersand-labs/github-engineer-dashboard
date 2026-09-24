@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -220,6 +221,25 @@ type parsedURL struct {
 	number   int
 }
 
+// GitHub username/org: alphanumeric, may contain single hyphens, cannot
+// begin or end with a hyphen, max 39 chars. Rejects "..", "-foo", "", etc. —
+// these values get string-concatenated straight into upstream API paths
+// (GithubAPIURL, which may point at an internal GHE host), so a value like
+// ".." must never reach that point unvalidated (Issue #129).
+var ownerRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+
+// GitHub repo name: alphanumeric plus . _ -, 1-100 chars, but "." and ".."
+// are reserved and must be rejected explicitly.
+var repoRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func isValidOwner(s string) bool {
+	return ownerRe.MatchString(s)
+}
+
+func isValidRepo(s string) bool {
+	return repoRe.MatchString(s) && s != "." && s != ".."
+}
+
 func parseGitHubURL(raw string) parsedURL {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		raw = "https://" + raw
@@ -241,12 +261,18 @@ func parseGitHubURL(raw string) parsedURL {
 	}
 
 	if len(parts) >= 2 && parts[0] == "orgs" {
+		if !isValidOwner(parts[1]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeOrg, org: parts[1]}
 	}
 	if len(parts) == 1 {
+		if !isValidOwner(parts[0]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeUser, username: parts[0]}
 	}
-	if len(parts) >= 4 {
+	if len(parts) >= 4 && isValidOwner(parts[0]) && isValidRepo(parts[1]) {
 		n, err := strconv.Atoi(parts[3])
 		if err == nil {
 			switch parts[2] {
@@ -258,6 +284,9 @@ func parseGitHubURL(raw string) parsedURL {
 		}
 	}
 	if len(parts) >= 2 {
+		if !isValidOwner(parts[0]) || !isValidRepo(parts[1]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeRepo, username: parts[0], repo: parts[1]}
 	}
 	return parsedURL{typ: urlTypeUnknown}
