@@ -34,7 +34,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(corsMiddleware(os.Getenv("CORS_ORIGINS")))
+	r.Use(corsMiddleware(os.Getenv("CORS_ORIGINS"), deps.GithubToken != ""))
 	handler.Register(r, deps)
 
 	log.Printf("github-engineer-dashboard go backend listening on :%s", port)
@@ -60,8 +60,11 @@ func getenvi(key string, fallback int) int {
 }
 
 // corsMiddleware allows origins listed in the comma-separated `origins` string.
-// Pass "*" to allow any origin.
-func corsMiddleware(origins string) func(http.Handler) http.Handler {
+// Pass "*" to allow any origin. When hasServerToken is true, a GITHUB_TOKEN
+// fallback is active for unauthenticated callers, so "*" is refused (Issue
+// #123: that combination lets any third-party site ride on the operator's
+// token) and no origins are reflected instead.
+func corsMiddleware(origins string, hasServerToken bool) func(http.Handler) http.Handler {
 	allowed := map[string]bool{}
 	for _, o := range strings.Split(origins, ",") {
 		if o = strings.TrimSpace(o); o != "" {
@@ -69,6 +72,11 @@ func corsMiddleware(origins string) func(http.Handler) http.Handler {
 		}
 	}
 	wildcard := allowed["*"]
+	if wildcard && hasServerToken {
+		log.Println("CORS_ORIGINS=\"*\" ignored: GITHUB_TOKEN fallback is set, refusing to reflect arbitrary origins")
+		wildcard = false
+		delete(allowed, "*")
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
