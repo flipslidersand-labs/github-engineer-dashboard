@@ -121,7 +121,7 @@ Python 版・Go 版それぞれ独立したファイル（`cache.db` / `cache-go
 | `CACHE_TTL_SECONDS` | —    | キャッシュ有効期限秒数（デフォルト: 300）                     |
 | `ANTHROPIC_API_KEY` | —    | AI レビュー用（省略時 Ollama fallback）                       |
 | `OLLAMA_URL`        | —    | Ollama エンドポイント（デフォルト: `http://localhost:11434`） |
-| `CORS_ORIGINS`      | —    | Go 版のみ。許可 Origin のカンマ区切り（`*` でワイルドカード） |
+| `CORS_ORIGINS`      | —    | 許可 Origin のカンマ区切り。未設定時はクロスオリジンアクセスを一切許可しない（同一オリジンのみ）。`GITHUB_TOKEN` を設定する場合は特に、`*`（ワイルドカード）は避け自ドメインに限定すること。Go 版は `GITHUB_TOKEN` 設定時に `*` を無視する |
 
 ## デプロイ（Render Blueprint）
 
