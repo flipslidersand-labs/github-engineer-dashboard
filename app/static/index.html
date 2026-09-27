@@ -220,6 +220,25 @@ const LANG_COLORS = {
 };
 function langColor(name) { return LANG_COLORS[name] || '#8b949e'; }
 
+// GitHub API data (bios, descriptions, filenames, error details, …) is
+// attacker-controlled — it renders here via innerHTML, so every value must
+// be escaped before interpolation (Issue #150). Safe for both text nodes
+// and double-quoted attribute values.
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// Only allow http(s) links (e.g. a profile's blog URL) — rejects
+// javascript:/data: schemes. Returns '' for anything else.
+function safeHref(u) {
+  try {
+    const parsed = new URL(u, location.href);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+  } catch { return ''; }
+}
+
 async function fetchAnalyze() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { show('<span class="err">GitHub URL を入力してください</span>'); return; }
@@ -230,7 +249,7 @@ async function fetchAnalyze() {
     const result = await res.json();
     const fn = { user: renderUser, repo: renderRepo, pr: renderPR, issue: renderIssue }[result.type];
     fn ? fn(result.data) : show('<span class="err">未対応のURLタイプです</span>');
-  } catch (e) { show(`<span class="err">Error: ${e.message}</span>`); }
+  } catch (e) { show(`<span class="err">Error: ${esc(e.message)}</span>`); }
 }
 
 function show(html) { document.getElementById('analyzeContent').innerHTML = html; }
@@ -246,18 +265,19 @@ function renderUser(d) {
     ? events.map(([t,c])=>`<div class="ev-card"><div class="ev-count">${c}</div><div class="ev-type">${t.replace('Event','')}</div></div>`).join('')
     : '<span style="color:#8b949e;">No recent public events.</span>';
 
+  const blogHref = d.blog ? safeHref(d.blog) : '';
   const metaParts = [
-    d.company ? `🏢 ${d.company}` : '',
-    d.location ? `📍 ${d.location}` : '',
-    d.blog ? `🔗 <a href="${d.blog}" target="_blank" style="color:#58a6ff;">${d.blog}</a>` : '',
-    d.created_at ? `📅 joined ${d.created_at.slice(0,7)}` : '',
+    d.company ? `🏢 ${esc(d.company)}` : '',
+    d.location ? `📍 ${esc(d.location)}` : '',
+    blogHref ? `🔗 <a href="${esc(blogHref)}" target="_blank" rel="noopener">${esc(d.blog)}</a>` : '',
+    d.created_at ? `📅 joined ${esc(d.created_at.slice(0,7))}` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
 
   const totalLang = Object.values(d.repo_languages||{}).reduce((a,b)=>a+b,0)||1;
   const langBar = Object.entries(d.repo_languages||{}).map(([l,n])=>
     `<div style="width:${(n/totalLang*100).toFixed(1)}%;background:${langColor(l)};"></div>`).join('');
   const langLegend = Object.entries(d.repo_languages||{}).map(([l,n])=>
-    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${l} (${n})</span>`).join('');
+    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${esc(l)} (${n})</span>`).join('');
   const langSection = Object.keys(d.repo_languages||{}).length ? `
     <div class="section-title">Languages (owned repos)</div>
     <div class="lang-bar">${langBar}</div>
@@ -265,9 +285,9 @@ function renderUser(d) {
 
   show(`
     <div>
-      <strong style="font-size:1.1rem;">${d.name ? `${d.name} (${d.username})` : d.username}</strong>
+      <strong style="font-size:1.1rem;">${d.name ? `${esc(d.name)} (${esc(d.username)})` : esc(d.username)}</strong>
       ${badges(d,'user')}
-      ${d.bio ? `<div style="font-size:0.875rem;color:#8b949e;margin-top:4px;">${d.bio}</div>` : ''}
+      ${d.bio ? `<div style="font-size:0.875rem;color:#8b949e;margin-top:4px;">${esc(d.bio)}</div>` : ''}
       ${metaParts ? `<div class="meta" style="margin-top:6px;">${metaParts}</div>` : ''}
       <div class="stats">
         <div class="stat-item"><div class="value">${d.public_repos}</div><div class="label">Repos</div></div>
@@ -281,7 +301,7 @@ function renderUser(d) {
     ${(d.recent_forks||[]).length ? `
       <div class="section-title">Recent Forks</div>
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">
-        ${d.recent_forks.map(f=>`<div class="meta">🍴 <a href="https://github.com/${f.full_name}" target="_blank" style="color:#58a6ff;">${f.full_name}</a> ⭐ ${f.stars} · ${f.updated_at.slice(0,10)}</div>`).join('')}
+        ${d.recent_forks.map(f=>`<div class="meta">🍴 <a href="https://github.com/${esc(f.full_name)}" target="_blank" rel="noopener" style="color:#58a6ff;">${esc(f.full_name)}</a> ⭐ ${f.stars} · ${esc(f.updated_at.slice(0,10))}</div>`).join('')}
       </div>` : ''}
     <div class="section-title">Recent Activity</div>
     <div class="ev-grid">${evCards}</div>`);
@@ -292,22 +312,22 @@ function renderRepo(d) {
   const langBar = Object.entries(d.languages).map(([l,n])=>
     `<div style="width:${(n/total*100).toFixed(1)}%;background:${langColor(l)};"></div>`).join('');
   const langLegend = Object.entries(d.languages).slice(0,8).map(([l,n])=>
-    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${l} ${(n/total*100).toFixed(1)}%</span>`).join('');
+    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${esc(l)} ${(n/total*100).toFixed(1)}%</span>`).join('');
   const contribs = (d.contributors||[]).map(c=>
-    `<div class="contrib-item"><img src="${c.avatar_url}" alt="${c.username}"><div><div class="c-name">${c.username}</div><div class="c-count">${c.contributions} commits</div></div></div>`).join('');
+    `<div class="contrib-item"><img src="${esc(c.avatar_url)}" alt="${esc(c.username)}"><div><div class="c-name">${esc(c.username)}</div><div class="c-count">${c.contributions} commits</div></div></div>`).join('');
   const topicHtml = (d.topics||[]).length
-    ? `<div class="topics">${d.topics.map(t=>`<span class="topic">${t}</span>`).join('')}</div>` : '';
+    ? `<div class="topics">${d.topics.map(t=>`<span class="topic">${esc(t)}</span>`).join('')}</div>` : '';
 
   const repoMeta = [
-    d.license ? `📄 ${d.license}` : '',
-    d.latest_release ? `🏷️ ${d.latest_release}${d.latest_release_at ? ' (' + d.latest_release_at.slice(0,10) + ')' : ''}` : '',
+    d.license ? `📄 ${esc(d.license)}` : '',
+    d.latest_release ? `🏷️ ${esc(d.latest_release)}${d.latest_release_at ? ' (' + esc(d.latest_release_at.slice(0,10)) + ')' : ''}` : '',
   ].filter(Boolean).join(' &nbsp;·&nbsp; ');
 
   show(`
     <div>
-      <span style="font-size:1.2rem;font-weight:700;color:#58a6ff;">${d.full_name}</span>
+      <span style="font-size:1.2rem;font-weight:700;color:#58a6ff;">${esc(d.full_name)}</span>
       ${badges(d,'repo')}
-      ${d.description ? `<div style="font-size:0.875rem;color:#8b949e;margin-top:4px;">${d.description}</div>` : ''}
+      ${d.description ? `<div style="font-size:0.875rem;color:#8b949e;margin-top:4px;">${esc(d.description)}</div>` : ''}
       ${repoMeta ? `<div class="meta" style="margin-top:6px;">${repoMeta}</div>` : ''}
     </div>
     <div class="stats" style="margin-top:12px;">
@@ -315,7 +335,7 @@ function renderRepo(d) {
       <div class="stat-item"><div class="value">🍴 ${d.forks.toLocaleString()}</div><div class="label">Forks</div></div>
       <div class="stat-item"><div class="value">${d.open_issues}</div><div class="label">Open Issues</div></div>
       ${d.open_pr_count != null ? `<div class="stat-item"><div class="value">${d.open_pr_count}</div><div class="label">Open PRs</div></div>` : ''}
-      ${d.language ? `<div class="stat-item"><div class="value">${d.language}</div><div class="label">Language</div></div>` : ''}
+      ${d.language ? `<div class="stat-item"><div class="value">${esc(d.language)}</div><div class="label">Language</div></div>` : ''}
       ${d.commits_last_30d != null ? `<div class="stat-item"><div class="value">${d.commits_last_30d}</div><div class="label">Commits (30d)</div></div>` : ''}
     </div>
     ${topicHtml}
@@ -324,16 +344,16 @@ function renderRepo(d) {
       <div class="lang-bar">${langBar}</div>
       <div class="lang-legend">${langLegend}</div>` : ''}
     ${contribs ? `<div class="section-title">Top Contributors</div><div class="contrib-list">${contribs}</div>` : ''}
-    <div class="meta">Updated: ${d.updated_at.slice(0,10)}</div>`);
+    <div class="meta">Updated: ${esc(d.updated_at.slice(0,10))}</div>`);
 }
 
 function renderPR(d) {
   const stateClass = { open:'state-open', closed:'state-closed', merged:'state-merged' }[d.state] || 'state-open';
   const reviewers = d.reviewers.length
-    ? `<div class="meta">Reviewers: ${d.reviewers.join(', ')}</div>` : '';
+    ? `<div class="meta">Reviewers: ${d.reviewers.map(esc).join(', ')}</div>` : '';
   show(`
     <div>
-      <span style="font-size:1.05rem;font-weight:700;">#${d.number} ${d.title}</span>
+      <span style="font-size:1.05rem;font-weight:700;">#${d.number} ${esc(d.title)}</span>
       <span class="state-badge ${stateClass}">${d.state}</span>
       ${badges(d,'pr')}
     </div>
@@ -343,16 +363,16 @@ function renderPR(d) {
       <div class="stat-item"><div class="value"><span class="diff-del">-${d.deletions}</span></div><div class="label">Deletions</div></div>
       <div class="stat-item"><div class="value">${d.comments + d.review_comments}</div><div class="label">Comments</div></div>
     </div>
-    <div class="meta">Author: <strong>${d.author}</strong> · ${d.base} ← ${d.head}</div>
+    <div class="meta">Author: <strong>${esc(d.author)}</strong> · ${esc(d.base)} ← ${esc(d.head)}</div>
     ${reviewers}
     ${d.review_wait_hours != null ? `<div class="meta">⏱️ Review wait: <strong>${d.review_wait_hours}h</strong></div>` : ''}
-    <div class="meta">Opened: ${d.created_at.slice(0,10)}${d.merged_at ? ' · Merged: ' + d.merged_at.slice(0,10) : ''}</div>
+    <div class="meta">Opened: ${esc(d.created_at.slice(0,10))}${d.merged_at ? ' · Merged: ' + esc(d.merged_at.slice(0,10)) : ''}</div>
     ${(d.changed_files_detail||[]).length ? `
       <div class="section-title">Changed Files</div>
       <div style="font-size:0.8rem;margin-top:4px;">
         ${d.changed_files_detail.slice(0,10).map(f=>`
           <div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #21262d;">
-            <span style="color:#c9d1d9;font-family:monospace;">${f.filename}</span>
+            <span style="color:#c9d1d9;font-family:monospace;">${esc(f.filename)}</span>
             <span><span class="diff-add">+${f.additions}</span> <span class="diff-del">-${f.deletions}</span></span>
           </div>`).join('')}
       </div>` : ''}
@@ -388,7 +408,7 @@ async function fetchReview() {
     btn.textContent = '🤖 AI Review';
     btn.disabled = false;
   } catch(e) {
-    sec.innerHTML = `<span class="err">Review error: ${e.message}</span>`;
+    sec.innerHTML = `<span class="err">Review error: ${esc(e.message)}</span>`;
     btn.textContent = '🤖 AI Review';
     btn.disabled = false;
   }
@@ -397,12 +417,12 @@ async function fetchReview() {
 function renderIssue(d) {
   const stateClass = d.state === 'open' ? 'state-open' : 'state-closed';
   const labelHtml = d.labels.length
-    ? `<div class="labels">${d.labels.map(l=>`<span class="label-tag">${l}</span>`).join('')}</div>` : '';
+    ? `<div class="labels">${d.labels.map(l=>`<span class="label-tag">${esc(l)}</span>`).join('')}</div>` : '';
   const assignees = d.assignees.length
-    ? `<div class="meta">Assignees: ${d.assignees.join(', ')}</div>` : '';
+    ? `<div class="meta">Assignees: ${d.assignees.map(esc).join(', ')}</div>` : '';
   show(`
     <div>
-      <span style="font-size:1.05rem;font-weight:700;">#${d.number} ${d.title}</span>
+      <span style="font-size:1.05rem;font-weight:700;">#${d.number} ${esc(d.title)}</span>
       <span class="state-badge ${stateClass}">${d.state}</span>
       ${badges(d,'issue')}
     </div>
@@ -410,10 +430,10 @@ function renderIssue(d) {
     <div class="stats" style="margin-top:12px;">
       <div class="stat-item"><div class="value">${d.comments}</div><div class="label">Comments</div></div>
     </div>
-    <div class="meta">Author: <strong>${d.author}</strong></div>
+    <div class="meta">Author: <strong>${esc(d.author)}</strong></div>
     ${assignees}
     ${(d.related_prs||[]).length ? `<div class="meta">🔗 Related PRs: ${d.related_prs.map(n=>`<strong>#${n}</strong>`).join(', ')}</div>` : ''}
-    <div class="meta">Opened: ${d.created_at.slice(0,10)}${d.closed_at ? ' · Closed: ' + d.closed_at.slice(0,10) : ''}</div>`);
+    <div class="meta">Opened: ${esc(d.created_at.slice(0,10))}${d.closed_at ? ' · Closed: ' + esc(d.closed_at.slice(0,10)) : ''}</div>`);
 }
 
 const _benchHistory = [];
@@ -428,7 +448,7 @@ async function fetchBenchmark() {
     const d = await res.json();
     _benchHistory.unshift(d);
     renderBenchmark(d);
-  } catch(e) { showIn('benchmarkContent', `<span class="err">Error: ${e.message}</span>`); }
+  } catch(e) { showIn('benchmarkContent', `<span class="err">Error: ${esc(e.message)}</span>`); }
 }
 
 function renderBenchmark(d) {
@@ -460,7 +480,7 @@ function renderBenchmark(d) {
          <tbody>
            ${_benchHistory.slice(0,8).map(h => `
              <tr>
-               <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${h.url.replace('https://github.com/','')}</td>
+               <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(h.url.replace('https://github.com/',''))}</td>
                <td>${h.python_ms}</td>
                <td>${h.go_ms ?? '—'}</td>
                <td>${h.speedup != null ? `<span class="${h.speedup > 1 ? 'speedup-fast' : 'speedup-slow'}">${h.speedup}×</span>` : '—'}</td>
@@ -470,7 +490,7 @@ function renderBenchmark(d) {
     : '';
 
   showIn('benchmarkContent', `
-    <div class="section-title">${d.type.toUpperCase()} — <span style="color:#58a6ff;font-size:0.75rem;">${d.url}</span></div>
+    <div class="section-title">${esc(d.type.toUpperCase())} — <span style="color:#58a6ff;font-size:0.75rem;">${esc(d.url)}</span></div>
     <div class="bench-row">
       <div>
         <div class="bench-label">Python &nbsp;<strong>${d.python_ms} ms</strong></div>
@@ -528,7 +548,7 @@ async function fetchSummary() {
     const res = await fetch(`${apiBase}/api/summary?url=${encodeURIComponent(url)}&exclude_forks=${excludeForks}`);
     if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || res.statusText); }
     renderSummary(await res.json());
-  } catch(e) { showIn('summaryContent',`<span class="err">Error: ${e.message}</span>`); }
+  } catch(e) { showIn('summaryContent',`<span class="err">Error: ${esc(e.message)}</span>`); }
 }
 
 function showIn(id, html) { document.getElementById(id).innerHTML = html; }
@@ -538,13 +558,13 @@ function renderSummary(d) {
   const langBar = Object.entries(d.language_distribution).map(([l,n])=>
     `<div style="width:${(n/total*100).toFixed(1)}%;background:${langColor(l)};"></div>`).join('');
   const langLegend = Object.entries(d.language_distribution).slice(0,10).map(([l,n])=>
-    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${l} (${n})</span>`).join('');
+    `<span class="lang-item"><span class="lang-dot" style="background:${langColor(l)};"></span>${esc(l)} (${n})</span>`).join('');
   const cache = d.cached ? '<span class="badge cached">cached</span>' : '<span class="badge">live</span>';
   const trunc = d.truncated ? ' <span style="color:#e3b341;font-size:0.75rem;">(上限超過・一部のみ)</span>' : '';
   showIn('summaryContent',`
     <div>
-      <strong style="font-size:1.1rem;">${d.owner}</strong>
-      <span class="type-badge">${d.owner_type}</span>${cache}
+      <strong style="font-size:1.1rem;">${esc(d.owner)}</strong>
+      <span class="type-badge">${esc(d.owner_type)}</span>${cache}
       ${d.forks_excluded ? '<span class="type-badge" style="color:#e3b341;">フォーク除外</span>' : ''}
       ${trunc}
     </div>
@@ -575,7 +595,7 @@ async function fetchCompare() {
       return;
     }
     renderCompare(rA, rB);
-  } catch(e) { showIn('compareContent',`<span class="err">Error: ${e.message}</span>`); }
+  } catch(e) { showIn('compareContent',`<span class="err">Error: ${esc(e.message)}</span>`); }
 }
 
 initConfig();
@@ -615,11 +635,11 @@ function renderCompare(rA, rB) {
     return;
   }
 
-  const nameA = type === 'user' ? (dA.name || dA.username) : dA.full_name;
-  const nameB = type === 'user' ? (dB.name || dB.username) : dB.full_name;
+  const nameA = esc(type === 'user' ? (dA.name || dA.username) : dA.full_name);
+  const nameB = esc(type === 'user' ? (dB.name || dB.username) : dB.full_name);
 
   showIn('compareContent',`
-    <div class="section-title">Compare · ${type}</div>
+    <div class="section-title">Compare · ${esc(type)}</div>
     <table style="width:100%;border-collapse:collapse;margin-top:8px;">
       <thead>
         <tr>
