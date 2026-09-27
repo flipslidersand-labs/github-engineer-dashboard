@@ -162,3 +162,48 @@ func TestGetRepoToleratesSubFetchFailures(t *testing.T) {
 		t.Errorf("OpenPRCount = %d, want 0", repo.OpenPRCount)
 	}
 }
+
+// TestGetWithAcceptCapsResponseBodySize verifies that a response body larger
+// than the requested limit is rejected with a clean error instead of being
+// read in full. It calls getWithAccept directly with a small test-sized
+// limit so the fixture doesn't need to allocate anything near the
+// production-sized 10MB/200KB constants to exercise the cap.
+func TestGetWithAcceptCapsResponseBodySize(t *testing.T) {
+	const testLimit = 100 // bytes
+
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Write well over the limit; LimitReader should stop the client from
+		// reading it all, and the client should still report a bounded
+		// error rather than hang or attempt to unmarshal a partial body.
+		oversized := make([]byte, testLimit*10)
+		_, _ = w.Write(oversized)
+	})
+
+	body, err := client.getWithAccept(context.Background(), "/big", "application/vnd.github+json", testLimit)
+	if err == nil {
+		t.Fatalf("getWithAccept: expected error for oversized body, got nil (len=%d)", len(body))
+	}
+	if body != nil {
+		t.Errorf("getWithAccept: expected nil body on cap error, got %d bytes", len(body))
+	}
+}
+
+// TestGetWithAcceptAllowsBodyAtLimit verifies a body exactly at the limit is
+// still accepted (only bodies exceeding the limit are rejected).
+func TestGetWithAcceptAllowsBodyAtLimit(t *testing.T) {
+	const testLimit = 100 // bytes
+
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, testLimit))
+	})
+
+	body, err := client.getWithAccept(context.Background(), "/exact", "application/vnd.github+json", testLimit)
+	if err != nil {
+		t.Fatalf("getWithAccept: unexpected error for body at limit: %v", err)
+	}
+	if len(body) != testLimit {
+		t.Errorf("getWithAccept: got %d bytes, want %d", len(body), testLimit)
+	}
+}
