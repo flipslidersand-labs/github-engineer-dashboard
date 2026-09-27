@@ -14,6 +14,7 @@ token both unlocks the 5000 req/h authenticated limit and gates access
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
@@ -44,6 +45,7 @@ from .reviewer import review_diff, review_diff_ollama
 from .url_parser import UrlType, parse_github_url
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -356,6 +358,7 @@ def _register_routes(app: FastAPI) -> None:
         python_ms = round((time.perf_counter() - t0) * 1000, 1)
 
         go_ms: float | None = None
+        go_error: str | None = None
         if settings.go_backend_url:
             try:
                 t1 = time.perf_counter()
@@ -367,8 +370,9 @@ def _register_routes(app: FastAPI) -> None:
                 )
                 resp.raise_for_status()
                 go_ms = round((time.perf_counter() - t1) * 1000, 1)
-            except Exception:
-                go_ms = None
+            except Exception as exc:
+                go_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("benchmark: Go backend call failed: %s", go_error)
 
         go_available = go_ms is not None
         speedup = round(python_ms / go_ms, 2) if go_ms is not None and go_ms > 0 else None
@@ -379,6 +383,7 @@ def _register_routes(app: FastAPI) -> None:
             go_ms=go_ms,
             speedup=speedup,
             go_available=go_available,
+            go_error=go_error,
         )
 
 
