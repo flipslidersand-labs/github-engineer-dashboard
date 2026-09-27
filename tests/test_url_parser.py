@@ -69,3 +69,26 @@ def test_repo_name_with_slash_like_traversal_rejected():
     # must still be rejected explicitly.
     result = parse_github_url("https://github.com/octocat/../pull/1")
     assert result.type == UrlType.UNKNOWN
+
+
+# ── Issue #160: str.isdigit() accepts non-ASCII digits that int() rejects ──
+
+
+def test_pr_number_with_unicode_superscript_rejected():
+    # "²" (U+00B2) is isdigit() == True but int("²") raises ValueError.
+    # parse_github_url must classify this as UNKNOWN, not leak it through
+    # as a PR number that later crashes at the int() call site.
+    result = parse_github_url("https://github.com/torvalds/linux/pull/²")
+    assert result.type == UrlType.UNKNOWN
+
+
+def test_issue_number_with_unicode_superscript_rejected():
+    result = parse_github_url("https://github.com/torvalds/linux/issues/²")
+    assert result.type == UrlType.UNKNOWN
+
+
+def test_valid_issue_number_still_parses():
+    # Regression guard: normal ASCII numeric issue numbers keep working.
+    result = parse_github_url("https://github.com/torvalds/linux/issues/42")
+    assert result.type == UrlType.ISSUE
+    assert result.params["number"] == "42"
