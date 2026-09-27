@@ -394,6 +394,14 @@ def test_analyze_pr_url(client):
     assert d["cached"] is False
 
 
+def test_analyze_pr_non_ascii_digit_number_returns_422(client):
+    # Issue #160: "²" (U+00B2) is isdigit() == True but int("²") raises
+    # ValueError. This must be a clean 422, not an unhandled 500.
+    h = {"X-GitHub-Token": "abc"}
+    r = client.get("/api/analyze?url=https://github.com/torvalds/linux/pull/²", headers=h)
+    assert r.status_code == 422
+
+
 def test_analyze_pr_pending_reviews_no_submitted_at(tmp_path):
     """reviews_raw が非空でも submitted_at が全件欠如していても review_wait_hours=None で返る。"""
     from app.github_client import GitHubClient
