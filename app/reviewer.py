@@ -33,13 +33,16 @@ def _truncate(diff: str) -> str:
 
 def review_diff(diff: str, api_key: str) -> str:
     """Send a PR diff to Claude Haiku and return a Markdown review."""
-    client = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": f"```diff\n{_truncate(diff)}\n```"}],
-    )
+    client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": f"```diff\n{_truncate(diff)}\n```"}],
+        )
+    except anthropic.APIError as exc:
+        raise RuntimeError(f"Claude API error: {exc}") from exc
     blocks = message.content
     if not blocks or not hasattr(blocks[0], "text"):
         return "*(no review content returned)*"
