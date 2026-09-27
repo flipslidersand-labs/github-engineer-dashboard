@@ -71,7 +71,7 @@ func (d *Deps) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (d *Deps) rateLimit(w http.ResponseWriter, r *http.Request) {
 	client := newClient(r, d)
-	rl, err := client.GetRateLimit()
+	rl, err := client.GetRateLimit(r.Context())
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -83,7 +83,7 @@ func (d *Deps) userActivity(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	client := newClient(r, d)
 	v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(username),
-		func() (*model.UserActivity, error) { return client.GetUserActivity(username) })
+		func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), username) })
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -114,7 +114,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	case urlTypeUser:
 		u := parsed.username
 		v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(u),
-			func() (*model.UserActivity, error) { return client.GetUserActivity(u) })
+			func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), u) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -124,7 +124,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 		u, repo := parsed.username, parsed.repo
 		key := fmt.Sprintf("repo:%s/%s", strings.ToLower(u), strings.ToLower(repo))
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.RepoInfo, error) { return client.GetRepo(u, repo) })
+			func() (*model.RepoInfo, error) { return client.GetRepo(r.Context(), u, repo) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -134,7 +134,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 		u, repo, num := parsed.username, parsed.repo, parsed.number
 		key := fmt.Sprintf("pr:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.PRInfo, error) { return client.GetPR(u, repo, num) })
+			func() (*model.PRInfo, error) { return client.GetPR(r.Context(), u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -144,7 +144,7 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 		u, repo, num := parsed.username, parsed.repo, parsed.number
 		key := fmt.Sprintf("issue:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.IssueInfo, error) { return client.GetIssue(u, repo, num) })
+			func() (*model.IssueInfo, error) { return client.GetIssue(r.Context(), u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -183,11 +183,11 @@ func (d *Deps) summary(w http.ResponseWriter, r *http.Request) {
 	var fetchFn func() (*model.CrossRepoSummary, error)
 	if parsed.typ == urlTypeUser {
 		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetUserReposSummary(parsed.username, excludeForks)
+			return client.GetUserReposSummary(r.Context(), parsed.username, excludeForks)
 		}
 	} else {
 		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetOrgReposSummary(parsed.org, excludeForks)
+			return client.GetOrgReposSummary(r.Context(), parsed.org, excludeForks)
 		}
 	}
 
