@@ -29,10 +29,26 @@ const (
 type Error struct {
 	StatusCode int
 	Message    string
+	// Headers carries the relevant response headers (at least
+	// X-RateLimit-Remaining and Retry-After) so callers can distinguish real
+	// rate-limit exhaustion from an unrelated 403 (e.g. permissions/SAML
+	// enforcement), which GitHub signals via headers, not the status code
+	// alone.
+	Headers http.Header
 }
 
 func (e *Error) Error() string {
 	return fmt.Sprintf("GitHub API error %d: %s", e.StatusCode, e.Message)
+}
+
+// RateLimitExhausted reports whether the response headers indicate real
+// rate-limit exhaustion (X-RateLimit-Remaining: 0, or a Retry-After hint for
+// secondary rate limits) rather than an unrelated 403.
+func (e *Error) RateLimitExhausted() bool {
+	if e.Headers == nil {
+		return false
+	}
+	return e.Headers.Get("X-RateLimit-Remaining") == "0" || e.Headers.Get("Retry-After") != ""
 }
 
 // Client holds the HTTP client and auth credentials.
@@ -104,9 +120,9 @@ func (c *Client) getWithAccept(ctx context.Context, path, accept string) ([]byte
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(body, &msg) == nil && msg.Message != "" {
-			return nil, &Error{StatusCode: resp.StatusCode, Message: msg.Message}
+			return nil, &Error{StatusCode: resp.StatusCode, Message: msg.Message, Headers: resp.Header}
 		}
-		return nil, &Error{StatusCode: resp.StatusCode, Message: string(body)}
+		return nil, &Error{StatusCode: resp.StatusCode, Message: string(body), Headers: resp.Header}
 	}
 	return body, nil
 }

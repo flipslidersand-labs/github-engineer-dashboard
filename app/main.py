@@ -49,6 +49,17 @@ _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 
 
+def _is_rate_limit_exhausted(headers) -> bool:
+    """True when response headers indicate real rate-limit exhaustion.
+
+    GitHub signals this via X-RateLimit-Remaining: 0 (or, for secondary rate
+    limits, a Retry-After header) — not merely by returning a 403.
+    """
+    if headers is None:
+        return False
+    return headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -77,8 +88,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(GitHubError)
     async def _github_error(_req: Request, exc: GitHubError) -> JSONResponse:
-        # 403 with exhausted rate limit surfaces as 429 to the client.
-        status = 429 if exc.status_code == 403 else exc.status_code
+        # Only remap 403 -> 429 when GitHub actually signals rate-limit
+        # exhaustion (X-RateLimit-Remaining: 0, or a Retry-After hint). A
+        # permissions/SAML-enforcement 403 is unrelated to rate limiting and
+        # must stay a 403, not masquerade as "rate limit exceeded".
+        status = exc.status_code
+        if status == 403 and _is_rate_limit_exhausted(exc.headers):
+            status = 429
         return JSONResponse(status_code=status, content={"error": exc.message})
 
     _register_routes(app)

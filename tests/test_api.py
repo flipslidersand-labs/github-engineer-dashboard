@@ -687,3 +687,54 @@ def test_config_with_go_backend(tmp_path):
     r = c.get("/api/config")
     assert r.status_code == 200
     assert r.json() == {"go_backend_url": "http://localhost:8080"}
+
+
+def _forbidden_client(tmp_path, response_headers: dict[str, str]):
+    """Build a TestClient whose GitHub calls all return a 403 with the given
+    response headers, to exercise the 403 vs 429 remap logic."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"message": "rate limit exceeded"},
+            headers=response_headers,
+        )
+
+    app = create_app(_settings(tmp_path))
+
+    def override_client(_token: str = Depends(require_token)):
+        transport = httpx.MockTransport(handler)
+        gh = GitHubClient(_token, client=httpx.Client(transport=transport))
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    return TestClient(app)
+
+
+def test_403_with_rate_limit_exhausted_header_becomes_429(tmp_path):
+    c = _forbidden_client(tmp_path, {"X-RateLimit-Remaining": "0"})
+    r = c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"})
+    assert r.status_code == 429
+
+
+def test_403_with_retry_after_header_becomes_429(tmp_path):
+    c = _forbidden_client(tmp_path, {"Retry-After": "30"})
+    r = c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"})
+    assert r.status_code == 429
+
+
+def test_403_without_rate_limit_headers_stays_403(tmp_path):
+    """A permissions/SAML-enforcement 403 has no rate-limit signal and must
+    NOT be remapped to 429."""
+    c = _forbidden_client(tmp_path, {})
+    r = c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"})
+    assert r.status_code == 403
+
+
+def test_403_with_nonzero_remaining_stays_403(tmp_path):
+    c = _forbidden_client(tmp_path, {"X-RateLimit-Remaining": "10"})
+    r = c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"})
+    assert r.status_code == 403
