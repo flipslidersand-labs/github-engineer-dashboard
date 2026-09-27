@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,7 @@ func TestGetRateLimitParsesCore(t *testing.T) {
 		})
 	})
 
-	rl, err := client.GetRateLimit()
+	rl, err := client.GetRateLimit(context.Background())
 	if err != nil {
 		t.Fatalf("GetRateLimit: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestGetRateLimitReturnsErrorOnNon2xx(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limit exceeded"})
 	})
 
-	_, err := client.GetRateLimit()
+	_, err := client.GetRateLimit(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -85,7 +86,7 @@ func TestGetUserActivityAggregatesEvents(t *testing.T) {
 		}
 	})
 
-	activity, err := client.GetUserActivity("octocat")
+	activity, err := client.GetUserActivity(context.Background(), "octocat")
 	if err != nil {
 		t.Fatalf("GetUserActivity: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestGetUserActivityPropagatesUserFetchError(t *testing.T) {
 		_ = json.NewEncoder(w).Encode([]any{})
 	})
 
-	_, err := client.GetUserActivity("ghost")
+	_, err := client.GetUserActivity(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -147,7 +148,7 @@ func TestGetRepoToleratesSubFetchFailures(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	repo, err := client.GetRepo("octocat", "hello")
+	repo, err := client.GetRepo(context.Background(), "octocat", "hello")
 	if err != nil {
 		t.Fatalf("GetRepo: %v", err)
 	}
