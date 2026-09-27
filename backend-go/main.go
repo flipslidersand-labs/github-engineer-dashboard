@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -29,6 +30,9 @@ func main() {
 		Cache:        c,
 		GithubToken:  os.Getenv("GITHUB_TOKEN"),
 		GithubAPIURL: getenv("GITHUB_API_URL", "https://api.github.com"),
+		// Shared across requests so GitHub API calls reuse pooled connections
+		// instead of a fresh TCP/TLS handshake per request (Issue #128).
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 	}
 
 	r := chi.NewRouter()

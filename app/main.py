@@ -19,6 +19,7 @@ import pathlib
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -52,10 +53,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     app.state.cache = SQLiteCache(settings.cache_db, settings.cache_ttl_seconds)
+    # Shared across all requests so GitHubClient reuses connections (keep-alive)
+    # instead of a fresh TCP/TLS handshake to api.github.com per request.
+    app.state.http_client = httpx.Client(timeout=10.0)
     try:
         yield
     finally:
         app.state.cache.close()
+        app.state.http_client.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -107,10 +112,13 @@ def require_token(
 
 
 def get_client(
+    request: Request,
     token: str = Depends(require_token),
     settings: Settings = Depends(get_settings),
 ) -> Iterator[GitHubClient]:
-    client = GitHubClient(token, settings.github_api_url)
+    # Reuses the process-wide http_client (see lifespan) for connection
+    # pooling; GitHubClient.close() is a no-op when the client is injected.
+    client = GitHubClient(token, settings.github_api_url, client=request.app.state.http_client)
     try:
         yield client
     finally:
