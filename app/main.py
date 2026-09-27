@@ -14,8 +14,11 @@ token both unlocks the 5000 req/h authenticated limit and gates access
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import os
 import pathlib
+import uuid
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 
@@ -48,6 +51,52 @@ from .url_parser import UrlType, parse_github_url
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 
+# Per-request ID, set by the request-id middleware below and readable from
+# anywhere in the request's call chain (including sync route handlers, which
+# FastAPI runs in a worker thread — anyio propagates the current contextvars
+# context into that thread) so it can be attached to log records or forwarded
+# to the Go backend (Issue #164).
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
+
+
+class _RequestIdLogFilter(logging.Filter):
+    """Injects the current request's ID into every log record, if any."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get() or "-"
+        return True
+
+
+def _configure_logging() -> None:
+    """Configure the root logger so module-level `logger.info/warning(...)`
+    calls actually surface (previously dropped by the default WARNING root
+    level, since nothing ever called basicConfig/dictConfig — Issue #164).
+
+    Level is driven by the LOG_LEVEL env var (default INFO). Safe to call
+    more than once (e.g. create_app() invoked repeatedly in tests): it only
+    attaches a handler the first time.
+    """
+    root = logging.getLogger()
+    if any(getattr(h, "_gh_dashboard_request_id_handler", False) for h in root.handlers):
+        return
+
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s] [request_id=%(request_id)s] %(message)s"
+        )
+    )
+    handler.addFilter(_RequestIdLogFilter())
+    handler._gh_dashboard_request_id_handler = True  # marker to avoid duplicates
+
+    root.addHandler(handler)
+    root.setLevel(level)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,6 +113,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    _configure_logging()
     settings = settings or Settings.from_env()
     app = FastAPI(title="github-engineer-dashboard", version=__version__, lifespan=lifespan)
     app.state.settings = settings
@@ -74,6 +124,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next):
+        # Echo an incoming X-Request-ID rather than replace it, so a caller
+        # that already has a correlation ID (e.g. a proxy, or the browser
+        # replaying a previous request) keeps using it end to end; otherwise
+        # generate a fresh one. Always present on the response (Issue #164).
+        incoming = request.headers.get("X-Request-ID")
+        request_id = incoming or str(uuid.uuid4())
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     @app.exception_handler(GitHubError)
     async def _github_error(_req: Request, exc: GitHubError) -> JSONResponse:
@@ -388,10 +454,16 @@ def _register_routes(app: FastAPI) -> None:
         if settings.go_backend_url:
             try:
                 t1 = time.perf_counter()
+                go_headers = {"X-GitHub-Token": token}
+                request_id = request_id_var.get()
+                if request_id:
+                    # Propagate so a single browser action's Python and Go
+                    # log lines can be correlated by the same ID (Issue #164).
+                    go_headers["X-Request-ID"] = request_id
                 resp = _httpx.get(
                     f"{settings.go_backend_url}/api/analyze",
                     params={"url": url},
-                    headers={"X-GitHub-Token": token},
+                    headers=go_headers,
                     timeout=30.0,
                 )
                 resp.raise_for_status()
