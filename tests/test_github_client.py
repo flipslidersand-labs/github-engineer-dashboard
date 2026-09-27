@@ -74,6 +74,33 @@ def test_error_raises_github_error():
     assert "Not Found" in exc.value.message
 
 
+def test_github_error_carries_rate_limit_headers():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"message": "rate limit exceeded"},
+            headers={"X-RateLimit-Remaining": "0", "Retry-After": "30"},
+        )
+
+    client = make_client(handler)
+    with pytest.raises(GitHubError) as exc:
+        client.get_rate_limit()
+    assert exc.value.status_code == 403
+    assert exc.value.headers.get("X-RateLimit-Remaining") == "0"
+    assert exc.value.headers.get("Retry-After") == "30"
+
+
+def test_github_error_headers_empty_when_absent():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"message": "Resource not accessible"})
+
+    client = make_client(handler)
+    with pytest.raises(GitHubError) as exc:
+        client.get_rate_limit()
+    assert exc.value.headers.get("X-RateLimit-Remaining") is None
+    assert exc.value.headers.get("Retry-After") is None
+
+
 def test_close_does_not_close_injected_client():
     """An injected (shared, connection-pooled) client must survive close() —
     it's reused across requests, unlike a client GitHubClient creates itself."""

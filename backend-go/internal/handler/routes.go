@@ -2,7 +2,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -357,16 +359,35 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func writeGitHubError(w http.ResponseWriter, err error) {
 	var e *gh.Error
-	if ghErr, ok := err.(*gh.Error); ok {
-		e = ghErr
+	if errors.As(err, &e) {
 		status := e.StatusCode
-		if status == 403 {
+		// Only remap 403 -> 429 when GitHub actually signals rate-limit
+		// exhaustion (X-RateLimit-Remaining: 0, or a Retry-After hint). A
+		// permissions/SAML-enforcement 403 is unrelated to rate limiting and
+		// must stay a 403, not masquerade as "rate limit exceeded".
+		if status == 403 && e.RateLimitExhausted() {
 			status = 429
 		}
 		writeError(w, status, e.Message)
 		return
 	}
-	writeError(w, http.StatusBadGateway, err.Error())
+
+	// Not a *gh.Error: most commonly the request context was canceled or hit
+	// its deadline (e.g. the client disconnected, or an upstream call to
+	// GitHub timed out). Surface those distinctly instead of a generic 502,
+	// which would otherwise mask "the request context ended" as "upstream is
+	// broken".
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		writeError(w, http.StatusGatewayTimeout, err.Error())
+	case errors.Is(err, context.Canceled):
+		// 499 (Client Closed Request) is the de facto convention (nginx) for
+		// "the client went away before we finished"; net/http has no matching
+		// constant.
+		writeError(w, 499, err.Error())
+	default:
+		writeError(w, http.StatusBadGateway, err.Error())
+	}
 }
 
 func boolToInt(b bool) int {
