@@ -216,6 +216,14 @@ class GitHubClient:
             "partial": bool(failed),
         }
 
+    def get_pr_title(self, username: str, repo: str, number: int) -> str:
+        """Return just a pull request's title with a single API call.
+
+        get_pr() fans out to /reviews and /files too, which is wasteful for
+        callers (like the AI review endpoint) that only need the title.
+        """
+        return self._get(f"/repos/{username}/{repo}/pulls/{number}").json()["title"]
+
     def get_pr(self, username: str, repo: str, number: int) -> dict:
         """Return structured data for a pull request."""
         from datetime import datetime

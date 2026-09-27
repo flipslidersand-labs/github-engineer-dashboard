@@ -315,7 +315,7 @@ def _register_routes(app: FastAPI) -> None:
             if cached is not None:
                 return ReviewResult(**{**cached, "cached": True})
 
-            pr_meta = client.get_pr(username, repo, number)
+            pr_title = client.get_pr_title(username, repo, number)
             diff = client.get_pr_diff(username, repo, number)
             try:
                 if settings.anthropic_api_key:
@@ -330,7 +330,7 @@ def _register_routes(app: FastAPI) -> None:
             raw = {
                 "url": url,
                 "pr_number": number,
-                "pr_title": pr_meta["title"],
+                "pr_title": pr_title,
                 "markdown": markdown,
             }
             cache.set(cache_key, raw)

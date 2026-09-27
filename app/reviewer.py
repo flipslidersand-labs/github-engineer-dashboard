@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import anthropic
 import httpx
 
@@ -31,9 +33,19 @@ def _truncate(diff: str) -> str:
     return truncated
 
 
+@functools.lru_cache(maxsize=8)
+def _anthropic_client(api_key: str) -> anthropic.Anthropic:
+    # Cached per api_key so repeated review_diff() calls reuse the same
+    # client (and its underlying httpx connection pool) instead of opening
+    # a fresh one — and never closing it — on every request. anthropic.
+    # Anthropic is safe to share across concurrent calls (its transport is
+    # an httpx.Client, itself thread-safe for concurrent requests).
+    return anthropic.Anthropic(api_key=api_key, timeout=30.0)
+
+
 def review_diff(diff: str, api_key: str) -> str:
     """Send a PR diff to Claude Haiku and return a Markdown review."""
-    client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
+    client = _anthropic_client(api_key)
     try:
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -72,7 +84,17 @@ def review_diff_ollama(diff: str, base_url: str, model: str) -> str:
         raise RuntimeError(f"Cannot connect to Ollama at {base_url}.")
     except httpx.HTTPStatusError as exc:
         raise RuntimeError(f"Ollama returned HTTP {exc.response.status_code}.")
-    body = resp.json()
-    if "error" in body:
-        raise RuntimeError(f"Ollama error: {body['error']}")
-    return body["message"]["content"]
+    except httpx.HTTPError as exc:
+        # Catch-all for other transport failures (e.g. httpx.ReadError) that
+        # aren't one of the more specific cases above — without this they
+        # escape uncaught and surface as an unhandled 500 instead of a 502.
+        raise RuntimeError(f"Ollama request failed: {exc}") from exc
+    try:
+        body = resp.json()
+        if "error" in body:
+            raise RuntimeError(f"Ollama error: {body['error']}")
+        return body["message"]["content"]
+    except (KeyError, ValueError) as exc:
+        # KeyError: body is valid JSON but missing "message"/"content".
+        # ValueError (json.JSONDecodeError subclasses it): body isn't JSON.
+        raise RuntimeError(f"Ollama returned a malformed response: {exc}") from exc
