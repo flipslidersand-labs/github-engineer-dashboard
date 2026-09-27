@@ -89,6 +89,10 @@ func (d *Deps) rateLimit(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) userActivity(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
+	if !isValidOwner(username) {
+		writeError(w, http.StatusUnprocessableEntity, "Invalid GitHub username.")
+		return
+	}
 	client := newClient(r, d)
 	v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(username),
 		func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), username) })
