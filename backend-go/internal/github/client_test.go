@@ -125,6 +125,229 @@ func TestGetUserActivityPropagatesUserFetchError(t *testing.T) {
 	}
 }
 
+func TestGetPRAggregatesReviewsAndFiles(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/repos/octocat/hello/pulls/42":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number":          42,
+				"title":           "Add feature",
+				"state":           "open",
+				"user":            map[string]string{"login": "octocat"},
+				"base":            map[string]string{"ref": "main"},
+				"head":            map[string]string{"ref": "feature"},
+				"additions":       10,
+				"deletions":       2,
+				"changed_files":   3,
+				"comments":        1,
+				"review_comments": 4,
+				"created_at":      "2024-01-01T00:00:00Z",
+			})
+		case "/repos/octocat/hello/pulls/42/reviews":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"user": map[string]string{"login": "reviewer1"}, "submitted_at": "2024-01-01T05:00:00Z"},
+				{"user": map[string]string{"login": "reviewer2"}, "submitted_at": "2024-01-01T10:00:00Z"},
+			})
+		case "/repos/octocat/hello/pulls/42/files":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"filename": "main.go", "additions": 8, "deletions": 1},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	pr, err := client.GetPR(context.Background(), "octocat", "hello", 42)
+	if err != nil {
+		t.Fatalf("GetPR: %v", err)
+	}
+	if pr.Number != 42 || pr.Title != "Add feature" || pr.State != "open" {
+		t.Errorf("got %+v", pr)
+	}
+	if len(pr.Reviewers) != 2 {
+		t.Errorf("Reviewers = %v, want 2 entries", pr.Reviewers)
+	}
+	if pr.ReviewWaitHours == nil || *pr.ReviewWaitHours != 5 {
+		t.Errorf("ReviewWaitHours = %v, want 5", pr.ReviewWaitHours)
+	}
+	if len(pr.ChangedFilesDetail) != 1 || pr.ChangedFilesDetail[0].Filename != "main.go" {
+		t.Errorf("ChangedFilesDetail = %+v", pr.ChangedFilesDetail)
+	}
+}
+
+func TestGetPRMergedStateOverridesOpen(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/repos/octocat/hello/pulls/7":
+			mergedAt := "2024-02-01T00:00:00Z"
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number":     7,
+				"state":      "closed",
+				"merged_at":  mergedAt,
+				"user":       map[string]string{"login": "octocat"},
+				"base":       map[string]string{"ref": "main"},
+				"head":       map[string]string{"ref": "feature"},
+				"created_at": "2024-01-01T00:00:00Z",
+			})
+		default:
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	})
+
+	pr, err := client.GetPR(context.Background(), "octocat", "hello", 7)
+	if err != nil {
+		t.Fatalf("GetPR: %v", err)
+	}
+	if pr.State != "merged" {
+		t.Errorf("State = %q, want merged", pr.State)
+	}
+	if pr.MergedAt == nil || *pr.MergedAt != "2024-02-01T00:00:00Z" {
+		t.Errorf("MergedAt = %v", pr.MergedAt)
+	}
+}
+
+func TestGetPRPropagatesFetchError(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octocat/hello/pulls/99" {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]any{})
+	})
+
+	_, err := client.GetPR(context.Background(), "octocat", "hello", 99)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	ghErr, ok := err.(*Error)
+	if !ok || ghErr.StatusCode != http.StatusNotFound {
+		t.Errorf("got err=%v", err)
+	}
+}
+
+func TestGetIssueAggregatesTimelineAndLabels(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/repos/octocat/hello/issues/5":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number":     5,
+				"title":      "Bug report",
+				"state":      "open",
+				"user":       map[string]string{"login": "octocat"},
+				"labels":     []map[string]string{{"name": "bug"}, {"name": "p1"}},
+				"assignees":  []map[string]string{{"login": "octocat"}},
+				"comments":   3,
+				"created_at": "2024-01-01T00:00:00Z",
+			})
+		case "/repos/octocat/hello/issues/5/timeline":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"event": "cross-referenced",
+					"source": map[string]any{
+						"issue": map[string]any{"number": 10, "pull_request": map[string]any{}},
+					},
+				},
+				{"event": "labeled"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	issue, err := client.GetIssue(context.Background(), "octocat", "hello", 5)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if issue.Number != 5 || issue.Title != "Bug report" || issue.Author != "octocat" {
+		t.Errorf("got %+v", issue)
+	}
+	if len(issue.Labels) != 2 || issue.Labels[0] != "bug" {
+		t.Errorf("Labels = %v", issue.Labels)
+	}
+	if len(issue.Assignees) != 1 || issue.Assignees[0] != "octocat" {
+		t.Errorf("Assignees = %v", issue.Assignees)
+	}
+	if len(issue.RelatedPRs) != 1 || issue.RelatedPRs[0] != 10 {
+		t.Errorf("RelatedPRs = %v, want [10]", issue.RelatedPRs)
+	}
+}
+
+func TestGetIssuePropagatesFetchError(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/octocat/hello/issues/404" {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]any{})
+	})
+
+	_, err := client.GetIssue(context.Background(), "octocat", "hello", 404)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	ghErr, ok := err.(*Error)
+	if !ok || ghErr.StatusCode != http.StatusNotFound {
+		t.Errorf("got err=%v", err)
+	}
+}
+
+// TestAggregateRepoListSetsTruncatedAtPageCap exercises the page-cap branch
+// of aggregateRepoList: when every one of reposMaxPages pages comes back full
+// (reposPageSize items), the loop stops at the cap and reports Truncated=true
+// instead of assuming there is no more data upstream.
+func TestAggregateRepoListSetsTruncatedAtPageCap(t *testing.T) {
+	fullRepo := map[string]any{"stargazers_count": 1, "forks_count": 0, "language": "Go", "fork": false}
+	fullPage := make([]map[string]any, reposPageSize)
+	for i := range fullPage {
+		fullPage[i] = fullRepo
+	}
+
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Every page comes back full-sized, so the loop never sees a
+		// short page to naturally stop on and must hit the page cap.
+		_ = json.NewEncoder(w).Encode(fullPage)
+	})
+
+	summary, err := client.GetUserReposSummary(context.Background(), "octocat", false)
+	if err != nil {
+		t.Fatalf("GetUserReposSummary: %v", err)
+	}
+	if !summary.Truncated {
+		t.Error("Truncated = false, want true when every page hits the cap")
+	}
+	if summary.RepoCount != reposPageSize*reposMaxPages {
+		t.Errorf("RepoCount = %d, want %d", summary.RepoCount, reposPageSize*reposMaxPages)
+	}
+}
+
+// TestAggregateRepoListNotTruncatedOnShortPage verifies the common case: a
+// short final page ends pagination without setting Truncated.
+func TestAggregateRepoListNotTruncatedOnShortPage(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"stargazers_count": 5, "forks_count": 1, "language": "Go", "fork": false},
+		})
+	})
+
+	summary, err := client.GetUserReposSummary(context.Background(), "octocat", false)
+	if err != nil {
+		t.Fatalf("GetUserReposSummary: %v", err)
+	}
+	if summary.Truncated {
+		t.Error("Truncated = true, want false for a single short page")
+	}
+	if summary.RepoCount != 1 {
+		t.Errorf("RepoCount = %d, want 1", summary.RepoCount)
+	}
+}
+
 // tryGet's failure tolerance is exercised indirectly: GetRepo's contributor/
 // language/PR/release/participation sub-fetches all use tryGet and must
 // degrade to zero values rather than failing the whole request.
