@@ -70,19 +70,26 @@ class GitHubClient:
         data = self._get("/rate_limit").json()
         return data["resources"]["core"]
 
-    def _get_all_user_repos(self, username: str) -> list:
-        """Paginate /users/{username}/repos up to _REPOS_MAX_PAGES pages."""
+    def _get_all_user_repos(self, username: str) -> tuple[list, bool]:
+        """Paginate /users/{username}/repos up to _REPOS_MAX_PAGES pages.
+
+        Returns ``(repos, partial)`` where ``partial`` is True when a page
+        fetch failed (rate limit, network error, ...) before pagination
+        reached its natural end, meaning the returned list is incomplete.
+        """
         repos: list = []
         for page in range(1, self._REPOS_MAX_PAGES + 1):
             batch = self._try_get_json(
                 f"/users/{username}/repos?per_page={self._REPOS_PAGE_SIZE}&page={page}"
             )
+            if batch is None:
+                return repos, True
             if not isinstance(batch, list) or not batch:
                 break
             repos.extend(batch)
             if len(batch) < self._REPOS_PAGE_SIZE:
                 break
-        return repos
+        return repos, False
 
     def get_user_activity(self, username: str) -> dict:
         """Aggregate a user's profile with a summary of recent public events."""
@@ -92,7 +99,10 @@ class GitHubClient:
             f_repos = pool.submit(self._get_all_user_repos, username)
             user = f_user.result().json()
             events = f_events.result().json()
-            repos = f_repos.result() or []
+            repos, repos_partial = f_repos.result()
+
+        if repos_partial:
+            logger.warning("get_user_activity(%s): partial data, repo pagination failed", username)
 
         counts = Counter(e.get("type") or "Unknown" for e in events)
 
@@ -134,6 +144,7 @@ class GitHubClient:
             "total_events": len(events),
             "repo_languages": repo_languages,
             "recent_forks": recent_forks,
+            "partial": repos_partial,
         }
 
     def get_repo(self, username: str, repo: str) -> dict:
@@ -226,8 +237,24 @@ class GitHubClient:
             f_reviews = pool.submit(self._try_get_json, f"{base}/reviews")
             f_files = pool.submit(self._try_get_json, f"{base}/files?per_page=30")
             pr = f_pr.result().json()
-            reviews_raw = f_reviews.result() or []
-            files_raw = f_files.result() or []
+            reviews_result = f_reviews.result()
+            files_result = f_files.result()
+            reviews_raw = reviews_result or []
+            files_raw = files_result or []
+
+        failed = [
+            name
+            for name, value in (("reviews", reviews_result), ("files", files_result))
+            if value is None
+        ]
+        if failed:
+            logger.warning(
+                "get_pr(%s/%s#%d): partial data, failed sub-fetches: %s",
+                username,
+                repo,
+                number,
+                ", ".join(failed),
+            )
 
         reviewers = list({r["user"]["login"] for r in reviews_raw if r.get("user")})
 
@@ -279,6 +306,7 @@ class GitHubClient:
             "changed_files_detail": changed_files_detail,
             "created_at": pr.get("created_at", ""),
             "merged_at": pr.get("merged_at"),
+            "partial": bool(failed),
         }
 
     def get_issue(self, username: str, repo: str, number: int) -> dict:
@@ -288,6 +316,14 @@ class GitHubClient:
         timeline = self._try_get_json(
             f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
         )
+        partial = timeline is None
+        if partial:
+            logger.warning(
+                "get_issue(%s/%s#%d): partial data, failed sub-fetch: timeline",
+                username,
+                repo,
+                number,
+            )
         related_prs = list(
             {
                 event["source"]["issue"]["number"]
@@ -311,6 +347,7 @@ class GitHubClient:
             "related_prs": related_prs,
             "created_at": issue.get("created_at", ""),
             "closed_at": issue.get("closed_at"),
+            "partial": partial,
         }
 
     def get_pr_diff(self, username: str, repo: str, number: int, max_bytes: int = 200_000) -> str:

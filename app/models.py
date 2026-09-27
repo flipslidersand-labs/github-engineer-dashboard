@@ -39,6 +39,7 @@ class UserActivity(BaseModel):
     total_events: int
     repo_languages: dict[str, int] = {}
     recent_forks: list[RecentFork] = []
+    partial: bool = False
     cached: bool = False
 
 
@@ -93,6 +94,7 @@ class PRInfo(BaseModel):
     changed_files_detail: list[ChangedFile] = []
     created_at: str
     merged_at: str | None = None
+    partial: bool = False
     cached: bool = False
 
 
@@ -107,6 +109,7 @@ class IssueInfo(BaseModel):
     related_prs: list[int] = []
     created_at: str
     closed_at: str | None = None
+    partial: bool = False
     cached: bool = False
 
 

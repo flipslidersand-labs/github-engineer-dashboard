@@ -63,6 +63,91 @@ def test_get_user_activity_aggregates_events():
     assert activity["total_events"] == 4
 
 
+def test_get_user_activity_marks_partial_when_repos_fetch_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/users/octocat":
+            return httpx.Response(200, json={"login": "octocat"})
+        if request.url.path == "/users/octocat/events/public":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/users/octocat/repos":
+            return httpx.Response(503, json={"message": "rate limited"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = make_client(handler)
+    activity = client.get_user_activity("octocat")
+    assert activity["partial"] is True
+    assert activity["total_stars"] == 0
+
+
+def test_get_user_activity_not_partial_when_repos_fetch_succeeds():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/users/octocat":
+            return httpx.Response(200, json={"login": "octocat"})
+        if request.url.path == "/users/octocat/events/public":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/users/octocat/repos":
+            if request.url.params.get("page") != "1":
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[{"name": "a", "stargazers_count": 5, "fork": False}],
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = make_client(handler)
+    activity = client.get_user_activity("octocat")
+    assert activity["partial"] is False
+    assert activity["total_stars"] == 5
+
+
+def test_get_pr_marks_partial_when_reviews_fetch_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/o/r/pulls/1":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 1,
+                    "title": "t",
+                    "state": "open",
+                    "user": {"login": "u"},
+                    "base": {"ref": "main"},
+                    "head": {"ref": "feat"},
+                    "created_at": "2026-08-01T00:00:00Z",
+                },
+            )
+        if request.url.path == "/repos/o/r/pulls/1/reviews":
+            return httpx.Response(503, json={"message": "rate limited"})
+        if request.url.path == "/repos/o/r/pulls/1/files":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = make_client(handler)
+    pr = client.get_pr("o", "r", 1)
+    assert pr["partial"] is True
+
+
+def test_get_issue_marks_partial_when_timeline_fetch_fails():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/o/r/issues/1":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 1,
+                    "title": "t",
+                    "state": "open",
+                    "user": {"login": "u"},
+                    "created_at": "2026-08-01T00:00:00Z",
+                },
+            )
+        if request.url.path == "/repos/o/r/issues/1/timeline":
+            return httpx.Response(503, json={"message": "rate limited"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = make_client(handler)
+    issue = client.get_issue("o", "r", 1)
+    assert issue["partial"] is True
+
+
 def test_error_raises_github_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"message": "Not Found"})
