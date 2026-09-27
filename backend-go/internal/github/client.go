@@ -2,6 +2,9 @@
 package github
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,27 +40,47 @@ type Client struct {
 	token      string
 	baseURL    string
 	httpClient *http.Client
+	// TokenFingerprint identifies this client's token without exposing it.
+	// Callers must scope any cache key by this value — without it, a
+	// response fetched with one token gets cached under a
+	// token-independent key and served to any other caller presenting a
+	// *different* token for the same URL within the TTL window, a
+	// cross-tenant private-data leak on a shared dashboard instance
+	// (Issue #130).
+	TokenFingerprint string
 }
 
-// New creates a Client. If baseURL is empty, the public GitHub API is used.
+// New creates a Client with its own dedicated *http.Client. Prefer
+// NewWithClient across requests in a long-running server so connections to
+// GitHub are pooled instead of a fresh TCP/TLS handshake per Client.
 func New(token, baseURL string) *Client {
+	return NewWithClient(token, baseURL, &http.Client{Timeout: 10 * time.Second})
+}
+
+// NewWithClient creates a Client backed by an existing *http.Client, letting
+// callers share one connection-pooled client across many Client instances
+// (e.g. one per request, each with a different token) instead of paying for
+// a new TCP/TLS handshake to api.github.com on every request.
+func NewWithClient(token, baseURL string, httpClient *http.Client) *Client {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	sum := sha256.Sum256([]byte(token))
 	return &Client{
-		token:      token,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		token:            token,
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		httpClient:       httpClient,
+		TokenFingerprint: hex.EncodeToString(sum[:])[:16],
 	}
 }
 
 // get issues a GET request and returns the response body, or a *Error.
-func (c *Client) get(path string) ([]byte, error) {
-	return c.getWithAccept(path, "application/vnd.github+json")
+func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+	return c.getWithAccept(ctx, path, "application/vnd.github+json")
 }
 
-func (c *Client) getWithAccept(path, accept string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+func (c *Client) getWithAccept(ctx context.Context, path, accept string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +112,8 @@ func (c *Client) getWithAccept(path, accept string) ([]byte, error) {
 }
 
 // tryGet fetches path and unmarshals into dst; returns false on any error.
-func (c *Client) tryGet(path string, dst any) bool {
-	data, err := c.get(path)
+func (c *Client) tryGet(ctx context.Context, path string, dst any) bool {
+	data, err := c.get(ctx, path)
 	if err != nil {
 		return false
 	}
@@ -98,8 +121,8 @@ func (c *Client) tryGet(path string, dst any) bool {
 }
 
 // GetRateLimit returns the core rate-limit block.
-func (c *Client) GetRateLimit() (*model.RateLimit, error) {
-	data, err := c.get("/rate_limit")
+func (c *Client) GetRateLimit(ctx context.Context) (*model.RateLimit, error) {
+	data, err := c.get(ctx, "/rate_limit")
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +138,7 @@ func (c *Client) GetRateLimit() (*model.RateLimit, error) {
 }
 
 // GetUserActivity aggregates a user's profile, events, and repo stats.
-func (c *Client) GetUserActivity(username string) (*model.UserActivity, error) {
+func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.UserActivity, error) {
 	type ghUser struct {
 		Login       string  `json:"login"`
 		Name        *string `json:"name"`
@@ -152,7 +175,7 @@ func (c *Client) GetUserActivity(username string) (*model.UserActivity, error) {
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		data, err := c.get("/users/" + username)
+		data, err := c.get(ctx, "/users/"+username)
 		if err != nil {
 			userErr = err
 			return
@@ -161,7 +184,7 @@ func (c *Client) GetUserActivity(username string) (*model.UserActivity, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		data, err := c.get("/users/" + username + "/events/public")
+		data, err := c.get(ctx, "/users/"+username+"/events/public")
 		if err != nil {
 			eventsErr = err
 			return
@@ -170,7 +193,7 @@ func (c *Client) GetUserActivity(username string) (*model.UserActivity, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		c.tryGet("/users/"+username+"/repos?per_page=100", &repos)
+		c.tryGet(ctx, "/users/"+username+"/repos?per_page=100", &repos)
 	}()
 	wg.Wait()
 
@@ -242,7 +265,7 @@ func (c *Client) GetUserActivity(username string) (*model.UserActivity, error) {
 }
 
 // GetRepo returns structured data for a repository.
-func (c *Client) GetRepo(username, repo string) (*model.RepoInfo, error) {
+func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.RepoInfo, error) {
 	type ghRepo struct {
 		Owner           struct{ Login string `json:"login"` } `json:"owner"`
 		Name            string   `json:"name"`
@@ -260,7 +283,7 @@ func (c *Client) GetRepo(username, repo string) (*model.RepoInfo, error) {
 		UpdatedAt string   `json:"updated_at"`
 	}
 
-	data, err := c.get(fmt.Sprintf("/repos/%s/%s", username, repo))
+	data, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", username, repo))
 	if err != nil {
 		return nil, err
 	}
@@ -297,11 +320,11 @@ func (c *Client) GetRepo(username, repo string) (*model.RepoInfo, error) {
 	)
 
 	wg.Add(5)
-	go func() { defer wg.Done(); okContribs = c.tryGet(base+"/contributors?per_page=5", &rawContribs) }()
-	go func() { defer wg.Done(); okLanguages = c.tryGet(base+"/languages", &languages) }()
-	go func() { defer wg.Done(); okOpenPRs = c.tryGet(base+"/pulls?state=open&per_page=100", &openPRs) }()
-	go func() { defer wg.Done(); c.tryGet(base+"/releases/latest", &release) }()
-	go func() { defer wg.Done(); c.tryGet(base+"/stats/participation", &participation) }()
+	go func() { defer wg.Done(); okContribs = c.tryGet(ctx, base+"/contributors?per_page=5", &rawContribs) }()
+	go func() { defer wg.Done(); okLanguages = c.tryGet(ctx, base+"/languages", &languages) }()
+	go func() { defer wg.Done(); okOpenPRs = c.tryGet(ctx, base+"/pulls?state=open&per_page=100", &openPRs) }()
+	go func() { defer wg.Done(); c.tryGet(ctx, base+"/releases/latest", &release) }()
+	go func() { defer wg.Done(); c.tryGet(ctx, base+"/stats/participation", &participation) }()
 	wg.Wait()
 
 	// releases/latest and stats/participation are excluded from partial
@@ -381,7 +404,7 @@ func (c *Client) GetRepo(username, repo string) (*model.RepoInfo, error) {
 }
 
 // GetPR returns structured data for a pull request.
-func (c *Client) GetPR(username, repo string, number int) (*model.PRInfo, error) {
+func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (*model.PRInfo, error) {
 	type ghPR struct {
 		Number        int     `json:"number"`
 		Title         string  `json:"title"`
@@ -417,9 +440,9 @@ func (c *Client) GetPR(username, repo string, number int) (*model.PRInfo, error)
 		wg      sync.WaitGroup
 	)
 	wg.Add(3)
-	go func() { defer wg.Done(); prData, prErr = c.get(base) }()
-	go func() { defer wg.Done(); c.tryGet(base+"/reviews", &reviews) }()
-	go func() { defer wg.Done(); c.tryGet(base+"/files?per_page=30", &files) }()
+	go func() { defer wg.Done(); prData, prErr = c.get(ctx, base) }()
+	go func() { defer wg.Done(); c.tryGet(ctx, base+"/reviews", &reviews) }()
+	go func() { defer wg.Done(); c.tryGet(ctx, base+"/files?per_page=30", &files) }()
 	wg.Wait()
 
 	if prErr != nil {
@@ -498,9 +521,9 @@ func (c *Client) GetPR(username, repo string, number int) (*model.PRInfo, error)
 }
 
 // GetPRDiff returns the raw unified diff for a pull request.
-func (c *Client) GetPRDiff(username, repo string, number int) (string, error) {
+func (c *Client) GetPRDiff(ctx context.Context, username, repo string, number int) (string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", username, repo, number)
-	data, err := c.getWithAccept(path, "application/vnd.github.v3.diff")
+	data, err := c.getWithAccept(ctx, path, "application/vnd.github.v3.diff")
 	if err != nil {
 		return "", err
 	}
@@ -508,7 +531,7 @@ func (c *Client) GetPRDiff(username, repo string, number int) (string, error) {
 }
 
 // GetIssue returns structured data for an issue.
-func (c *Client) GetIssue(username, repo string, number int) (*model.IssueInfo, error) {
+func (c *Client) GetIssue(ctx context.Context, username, repo string, number int) (*model.IssueInfo, error) {
 	type ghIssue struct {
 		Number    int     `json:"number"`
 		Title     string  `json:"title"`
@@ -532,7 +555,7 @@ func (c *Client) GetIssue(username, repo string, number int) (*model.IssueInfo, 
 
 	base := fmt.Sprintf("/repos/%s/%s/issues/%d", username, repo, number)
 
-	data, err := c.get(base)
+	data, err := c.get(ctx, base)
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +565,7 @@ func (c *Client) GetIssue(username, repo string, number int) (*model.IssueInfo, 
 	}
 
 	var timeline []ghTimelineEvent
-	c.tryGet(base+"/timeline?per_page=100", &timeline)
+	c.tryGet(ctx, base+"/timeline?per_page=100", &timeline)
 
 	relatedSet := map[int]bool{}
 	for _, e := range timeline {
@@ -579,8 +602,8 @@ func (c *Client) GetIssue(username, repo string, number int) (*model.IssueInfo, 
 }
 
 // GetUserReposSummary aggregates a user's repos.
-func (c *Client) GetUserReposSummary(username string, excludeForks bool) (*model.CrossRepoSummary, error) {
-	data, truncated, err := c.aggregateRepoList("/users/"+username+"/repos", excludeForks)
+func (c *Client) GetUserReposSummary(ctx context.Context, username string, excludeForks bool) (*model.CrossRepoSummary, error) {
+	data, truncated, err := c.aggregateRepoList(ctx, "/users/"+username+"/repos", excludeForks)
 	if err != nil {
 		return nil, err
 	}
@@ -591,8 +614,8 @@ func (c *Client) GetUserReposSummary(username string, excludeForks bool) (*model
 }
 
 // GetOrgReposSummary aggregates an org's repos.
-func (c *Client) GetOrgReposSummary(org string, excludeForks bool) (*model.CrossRepoSummary, error) {
-	data, truncated, err := c.aggregateRepoList("/orgs/"+org+"/repos", excludeForks)
+func (c *Client) GetOrgReposSummary(ctx context.Context, org string, excludeForks bool) (*model.CrossRepoSummary, error) {
+	data, truncated, err := c.aggregateRepoList(ctx, "/orgs/"+org+"/repos", excludeForks)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +625,7 @@ func (c *Client) GetOrgReposSummary(org string, excludeForks bool) (*model.Cross
 	return data, nil
 }
 
-func (c *Client) aggregateRepoList(basePath string, excludeForks bool) (*model.CrossRepoSummary, bool, error) {
+func (c *Client) aggregateRepoList(ctx context.Context, basePath string, excludeForks bool) (*model.CrossRepoSummary, bool, error) {
 	type ghRepo struct {
 		StargazersCount int     `json:"stargazers_count"`
 		ForksCount      int     `json:"forks_count"`
@@ -620,8 +643,15 @@ func (c *Client) aggregateRepoList(basePath string, excludeForks bool) (*model.C
 
 	for page := 1; page <= reposMaxPages; page++ {
 		path := fmt.Sprintf("%s%sper_page=%d&page=%d", basePath, sep, reposPageSize, page)
+		data, err := c.get(ctx, path)
+		if err != nil {
+			return nil, false, err
+		}
 		var batch []ghRepo
-		if !c.tryGet(path, &batch) || len(batch) == 0 {
+		if err := json.Unmarshal(data, &batch); err != nil {
+			return nil, false, err
+		}
+		if len(batch) == 0 {
 			break
 		}
 		allRepos = append(allRepos, batch...)

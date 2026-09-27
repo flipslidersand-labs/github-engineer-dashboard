@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import logging
 from collections import Counter
 
@@ -38,7 +39,17 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        # A shared/injected client outlives this GitHubClient (it's reused
+        # across requests for connection pooling) and must not be closed here.
+        self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout)
+        # Cache keys must be scoped per-token: without this, a response
+        # fetched with one token gets cached under a token-independent key
+        # (e.g. "repo:owner/name") and served to any other caller presenting
+        # a *different* token for the same URL within the TTL window — a
+        # cross-tenant private-data leak on a shared dashboard instance
+        # (Issue #130). Never store the raw token itself as a cache key.
+        self.token_fingerprint = hashlib.sha256(token.encode()).hexdigest()[:16]
 
     def _get(self, path: str) -> httpx.Response:
         resp = self._client.get(f"{self._base_url}{path}", headers=self._headers)
@@ -274,23 +285,20 @@ class GitHubClient:
         """Return structured data for an issue."""
         issue = self._get(f"/repos/{username}/{repo}/issues/{number}").json()
 
-        try:
-            timeline = self._get(
-                f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
-            ).json()
-            related_prs = list(
-                {
-                    event["source"]["issue"]["number"]
-                    for event in timeline
-                    if (
-                        isinstance(event, dict)
-                        and event.get("event") == "cross-referenced"
-                        and event.get("source", {}).get("issue", {}).get("pull_request")
-                    )
-                }
-            )
-        except GitHubError:
-            related_prs = []
+        timeline = self._try_get_json(
+            f"/repos/{username}/{repo}/issues/{number}/timeline?per_page=100"
+        )
+        related_prs = list(
+            {
+                event["source"]["issue"]["number"]
+                for event in (timeline or [])
+                if (
+                    isinstance(event, dict)
+                    and event.get("event") == "cross-referenced"
+                    and event.get("source", {}).get("issue", {}).get("pull_request")
+                )
+            }
+        )
 
         return {
             "number": issue["number"],
@@ -390,4 +398,5 @@ class GitHubClient:
         return {**data, "owner": org, "owner_type": "org"}
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()

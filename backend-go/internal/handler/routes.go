@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/flipslidersand/github-engineer-dashboard/backend-go/internal/cache"
 	gh "github.com/flipslidersand/github-engineer-dashboard/backend-go/internal/github"
@@ -23,6 +25,10 @@ type Deps struct {
 	Cache        *cache.Cache
 	GithubToken  string
 	GithubAPIURL string
+	// HTTPClient is shared across all requests so GitHub API calls reuse
+	// pooled connections instead of a fresh TCP/TLS handshake per request.
+	// Falls back to gh.New's own client if left nil (e.g. in older tests).
+	HTTPClient *http.Client
 }
 
 // Register mounts all routes on r.
@@ -59,6 +65,9 @@ func newClient(r *http.Request, d *Deps) *gh.Client {
 	if token == "" {
 		token = d.GithubToken
 	}
+	if d.HTTPClient != nil {
+		return gh.NewWithClient(token, d.GithubAPIURL, d.HTTPClient)
+	}
 	return gh.New(token, d.GithubAPIURL)
 }
 
@@ -70,7 +79,7 @@ func (d *Deps) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (d *Deps) rateLimit(w http.ResponseWriter, r *http.Request) {
 	client := newClient(r, d)
-	rl, err := client.GetRateLimit()
+	rl, err := client.GetRateLimit(r.Context())
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -81,8 +90,8 @@ func (d *Deps) rateLimit(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) userActivity(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	client := newClient(r, d)
-	v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(username),
-		func() (*model.UserActivity, error) { return client.GetUserActivity(username) })
+	v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(username),
+		func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), username) })
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -112,8 +121,8 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	switch parsed.typ {
 	case urlTypeUser:
 		u := parsed.username
-		v, cached, err := fromCache(d.Cache, "activity:"+strings.ToLower(u),
-			func() (*model.UserActivity, error) { return client.GetUserActivity(u) })
+		v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(u),
+			func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), u) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -121,9 +130,9 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypeRepo:
 		u, repo := parsed.username, parsed.repo
-		key := fmt.Sprintf("repo:%s/%s", strings.ToLower(u), strings.ToLower(repo))
+		key := fmt.Sprintf("%s:repo:%s/%s", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo))
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.RepoInfo, error) { return client.GetRepo(u, repo) })
+			func() (*model.RepoInfo, error) { return client.GetRepo(r.Context(), u, repo) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -131,9 +140,9 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypePR:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
-		key := fmt.Sprintf("pr:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
+		key := fmt.Sprintf("%s:pr:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.PRInfo, error) { return client.GetPR(u, repo, num) })
+			func() (*model.PRInfo, error) { return client.GetPR(r.Context(), u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -141,9 +150,9 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 
 	case urlTypeIssue:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
-		key := fmt.Sprintf("issue:%s/%s/%d", strings.ToLower(u), strings.ToLower(repo), num)
+		key := fmt.Sprintf("%s:issue:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
 		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.IssueInfo, error) { return client.GetIssue(u, repo, num) })
+			func() (*model.IssueInfo, error) { return client.GetIssue(r.Context(), u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -178,15 +187,15 @@ func (d *Deps) summary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := fmt.Sprintf("summary:%s:forks=%d", ownerKey, boolToInt(excludeForks))
+	key := fmt.Sprintf("%s:summary:%s:forks=%d", client.TokenFingerprint, ownerKey, boolToInt(excludeForks))
 	var fetchFn func() (*model.CrossRepoSummary, error)
 	if parsed.typ == urlTypeUser {
 		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetUserReposSummary(parsed.username, excludeForks)
+			return client.GetUserReposSummary(r.Context(), parsed.username, excludeForks)
 		}
 	} else {
 		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetOrgReposSummary(parsed.org, excludeForks)
+			return client.GetOrgReposSummary(r.Context(), parsed.org, excludeForks)
 		}
 	}
 
@@ -220,6 +229,25 @@ type parsedURL struct {
 	number   int
 }
 
+// GitHub username/org: alphanumeric, may contain single hyphens, cannot
+// begin or end with a hyphen, max 39 chars. Rejects "..", "-foo", "", etc. —
+// these values get string-concatenated straight into upstream API paths
+// (GithubAPIURL, which may point at an internal GHE host), so a value like
+// ".." must never reach that point unvalidated (Issue #129).
+var ownerRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+
+// GitHub repo name: alphanumeric plus . _ -, 1-100 chars, but "." and ".."
+// are reserved and must be rejected explicitly.
+var repoRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func isValidOwner(s string) bool {
+	return ownerRe.MatchString(s)
+}
+
+func isValidRepo(s string) bool {
+	return repoRe.MatchString(s) && s != "." && s != ".."
+}
+
 func parseGitHubURL(raw string) parsedURL {
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		raw = "https://" + raw
@@ -241,14 +269,20 @@ func parseGitHubURL(raw string) parsedURL {
 	}
 
 	if len(parts) >= 2 && parts[0] == "orgs" {
+		if !isValidOwner(parts[1]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeOrg, org: parts[1]}
 	}
 	if len(parts) == 1 {
+		if !isValidOwner(parts[0]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeUser, username: parts[0]}
 	}
-	if len(parts) >= 4 {
+	if len(parts) >= 4 && isValidOwner(parts[0]) && isValidRepo(parts[1]) {
 		n, err := strconv.Atoi(parts[3])
-		if err == nil {
+		if err == nil && n > 0 {
 			switch parts[2] {
 			case "pull":
 				return parsedURL{typ: urlTypePR, username: parts[0], repo: parts[1], number: n}
@@ -258,6 +292,9 @@ func parseGitHubURL(raw string) parsedURL {
 		}
 	}
 	if len(parts) >= 2 {
+		if !isValidOwner(parts[0]) || !isValidRepo(parts[1]) {
+			return parsedURL{typ: urlTypeUnknown}
+		}
 		return parsedURL{typ: urlTypeRepo, username: parts[0], repo: parts[1]}
 	}
 	return parsedURL{typ: urlTypeUnknown}
@@ -267,6 +304,12 @@ func parseGitHubURL(raw string) parsedURL {
 
 // fromCache returns cached data (wasCached=true) or calls fetch, stores result,
 // and returns fresh data (wasCached=false). On fetch error returns nil, false, err.
+// fetchGroup deduplicates concurrent fetches for the same cache key so that
+// simultaneous requests for the same resource (e.g. two people opening the
+// same PR review at once) trigger a single upstream call instead of one per
+// request — important where the "fetch" is a paid LLM call (see /api/review).
+var fetchGroup singleflight.Group
+
 // partialResult is implemented by response types that can be built from an
 // incomplete set of sub-fetches and therefore should not be cached as-is.
 type partialResult interface {
@@ -278,14 +321,26 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 	if c.Get(key, &dst) {
 		return &dst, true, nil
 	}
-	v, err := fetch()
+	v, err, _ := fetchGroup.Do(key, func() (any, error) {
+		// Re-check: another goroutine may have populated the cache while we
+		// were waiting for our turn to run fetch().
+		var dst2 T
+		if c.Get(key, &dst2) {
+			return &dst2, nil
+		}
+		result, err := fetch()
+		if err != nil {
+			return nil, err
+		}
+		if p, ok := any(result).(partialResult); !ok || !p.IsPartial() {
+			_ = c.Set(key, result)
+		}
+		return result, nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	if p, ok := any(v).(partialResult); !ok || !p.IsPartial() {
-		_ = c.Set(key, v)
-	}
-	return v, false, nil
+	return v.(*T), false, nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

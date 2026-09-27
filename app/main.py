@@ -14,10 +14,12 @@ token both unlocks the 5000 req/h authenticated limit and gates access
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,16 +46,21 @@ from .reviewer import review_diff, review_diff_ollama
 from .url_parser import UrlType, parse_github_url
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     app.state.cache = SQLiteCache(settings.cache_db, settings.cache_ttl_seconds)
+    # Shared across all requests so GitHubClient reuses connections (keep-alive)
+    # instead of a fresh TCP/TLS handshake to api.github.com per request.
+    app.state.http_client = httpx.Client(timeout=10.0)
     try:
         yield
     finally:
         app.state.cache.close()
+        app.state.http_client.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -105,10 +112,13 @@ def require_token(
 
 
 def get_client(
+    request: Request,
     token: str = Depends(require_token),
     settings: Settings = Depends(get_settings),
 ) -> Iterator[GitHubClient]:
-    client = GitHubClient(token, settings.github_api_url)
+    # Reuses the process-wide http_client (see lifespan) for connection
+    # pooling; GitHubClient.close() is a no-op when the client is injected.
+    client = GitHubClient(token, settings.github_api_url, client=request.app.state.http_client)
     try:
         yield client
     finally:
@@ -119,15 +129,23 @@ def get_client(
 
 
 def _cache_fetch(cache, key: str, fetch_fn, model):
-    """Return model from cache, or call fetch_fn(), store, and return fresh."""
+    """Return model from cache, or call fetch_fn(), store, and return fresh.
+
+    Concurrent misses for the same key serialize on a per-key lock so
+    fetch_fn runs once, not once per simultaneous request.
+    """
     cached_data = cache.get(key)
     if cached_data is not None:
         return model(**{**cached_data, "cached": True})
-    raw = fetch_fn()
-    result = model(**{**raw, "cached": False})
-    if not raw.get("partial"):
-        cache.set(key, raw)
-    return result
+    with cache.lock_for(key):
+        cached_data = cache.get(key)
+        if cached_data is not None:
+            return model(**{**cached_data, "cached": True})
+        raw = fetch_fn()
+        result = model(**{**raw, "cached": False})
+        if not raw.get("partial"):
+            cache.set(key, raw)
+        return result
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -164,7 +182,7 @@ def _register_routes(app: FastAPI) -> None:
     ) -> UserActivity:
         return _cache_fetch(
             cache,
-            f"activity:{username.lower()}",
+            f"{client.token_fingerprint}:activity:{username.lower()}",
             lambda: client.get_user_activity(username),
             UserActivity,
         )
@@ -190,7 +208,7 @@ def _register_routes(app: FastAPI) -> None:
                 detail="Summary requires a GitHub user or organization URL.",
             )
 
-        key = f"summary:{owner_key}:forks={int(exclude_forks)}"
+        key = f"{client.token_fingerprint}:summary:{owner_key}:forks={int(exclude_forks)}"
         if parsed.type == UrlType.USER:
             return _cache_fetch(
                 cache,
@@ -217,7 +235,7 @@ def _register_routes(app: FastAPI) -> None:
             username = parsed.params["username"]
             data = _cache_fetch(
                 cache,
-                f"activity:{username.lower()}",
+                f"{client.token_fingerprint}:activity:{username.lower()}",
                 lambda: client.get_user_activity(username),
                 UserActivity,
             )
@@ -228,7 +246,7 @@ def _register_routes(app: FastAPI) -> None:
             repo = parsed.params["repo"]
             data = _cache_fetch(
                 cache,
-                f"repo:{username.lower()}/{repo.lower()}",
+                f"{client.token_fingerprint}:repo:{username.lower()}/{repo.lower()}",
                 lambda: client.get_repo(username, repo),
                 RepoInfo,
             )
@@ -240,7 +258,7 @@ def _register_routes(app: FastAPI) -> None:
             number = int(parsed.params["number"])
             data = _cache_fetch(
                 cache,
-                f"pr:{username.lower()}/{repo.lower()}/{number}",
+                f"{client.token_fingerprint}:pr:{username.lower()}/{repo.lower()}/{number}",
                 lambda: client.get_pr(username, repo, number),
                 PRInfo,
             )
@@ -252,7 +270,7 @@ def _register_routes(app: FastAPI) -> None:
             number = int(parsed.params["number"])
             data = _cache_fetch(
                 cache,
-                f"issue:{username.lower()}/{repo.lower()}/{number}",
+                f"{client.token_fingerprint}:issue:{username.lower()}/{repo.lower()}/{number}",
                 lambda: client.get_issue(username, repo, number),
                 IssueInfo,
             )
@@ -284,29 +302,39 @@ def _register_routes(app: FastAPI) -> None:
         repo = parsed.params["repo"]
         number = int(parsed.params["number"])
 
-        cache_key = f"review:{username.lower()}/{repo.lower()}/{number}"
+        cache_key = f"{client.token_fingerprint}:review:{username.lower()}/{repo.lower()}/{number}"
         cached = cache.get(cache_key)
         if cached is not None:
             return ReviewResult(**{**cached, "cached": True})
 
-        pr_meta = client.get_pr(username, repo, number)
-        diff = client.get_pr_diff(username, repo, number)
-        try:
-            if settings.anthropic_api_key:
-                markdown = review_diff(diff, settings.anthropic_api_key)
-            else:
-                markdown = review_diff_ollama(diff, settings.ollama_base_url, settings.ollama_model)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc))
+        # Serialize concurrent misses for the same PR: the review call is a
+        # paid LLM request, so two simultaneous requests for the same PR must
+        # not trigger two of them.
+        with cache.lock_for(cache_key):
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return ReviewResult(**{**cached, "cached": True})
 
-        raw = {
-            "url": url,
-            "pr_number": number,
-            "pr_title": pr_meta["title"],
-            "markdown": markdown,
-        }
-        cache.set(cache_key, raw)
-        return ReviewResult(**{**raw, "cached": False})
+            pr_meta = client.get_pr(username, repo, number)
+            diff = client.get_pr_diff(username, repo, number)
+            try:
+                if settings.anthropic_api_key:
+                    markdown = review_diff(diff, settings.anthropic_api_key)
+                else:
+                    markdown = review_diff_ollama(
+                        diff, settings.ollama_base_url, settings.ollama_model
+                    )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=502, detail=str(exc))
+
+            raw = {
+                "url": url,
+                "pr_number": number,
+                "pr_title": pr_meta["title"],
+                "markdown": markdown,
+            }
+            cache.set(cache_key, raw)
+            return ReviewResult(**{**raw, "cached": False})
 
     @app.get("/api/benchmark", response_model=BenchmarkResult, tags=["github"])
     def benchmark(
@@ -356,6 +384,7 @@ def _register_routes(app: FastAPI) -> None:
         python_ms = round((time.perf_counter() - t0) * 1000, 1)
 
         go_ms: float | None = None
+        go_error: str | None = None
         if settings.go_backend_url:
             try:
                 t1 = time.perf_counter()
@@ -367,8 +396,9 @@ def _register_routes(app: FastAPI) -> None:
                 )
                 resp.raise_for_status()
                 go_ms = round((time.perf_counter() - t1) * 1000, 1)
-            except Exception:
-                go_ms = None
+            except Exception as exc:
+                go_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("benchmark: Go backend call failed: %s", go_error)
 
         go_available = go_ms is not None
         speedup = round(python_ms / go_ms, 2) if go_ms is not None and go_ms > 0 else None
@@ -379,6 +409,7 @@ def _register_routes(app: FastAPI) -> None:
             go_ms=go_ms,
             speedup=speedup,
             go_available=go_available,
+            go_error=go_error,
         )
 
 
