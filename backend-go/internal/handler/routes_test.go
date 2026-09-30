@@ -80,6 +80,22 @@ func TestRateLimitWithToken(t *testing.T) {
 	}
 }
 
+// TestUserActivityRejectsInvalidUsername covers Issue #151: this route took
+// chi.URLParam("username") straight to the GitHub API without going through
+// isValidOwner, unlike parseGitHubURL's routes.
+func TestUserActivityRejectsInvalidUsername(t *testing.T) {
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/-invalid/activity", nil)
+	req.Header.Set("X-GitHub-Token", "abc")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422, body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestAnalyzeRequiresURL(t *testing.T) {
 	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {})
 

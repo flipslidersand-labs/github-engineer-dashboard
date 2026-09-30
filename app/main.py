@@ -43,7 +43,7 @@ from .models import (
     UserActivity,
 )
 from .reviewer import review_diff, review_diff_ollama
-from .url_parser import UrlType, parse_github_url
+from .url_parser import UrlType, is_valid_owner, parse_github_url
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
@@ -180,6 +180,8 @@ def _register_routes(app: FastAPI) -> None:
         client: GitHubClient = Depends(get_client),
         cache: SQLiteCache = Depends(get_cache),
     ) -> UserActivity:
+        if not is_valid_owner(username):
+            raise HTTPException(status_code=422, detail="Invalid GitHub username.")
         return _cache_fetch(
             cache,
             f"{client.token_fingerprint}:activity:{username.lower()}",
