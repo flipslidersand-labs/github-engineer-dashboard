@@ -212,6 +212,9 @@
 <script>
 let apiBase = '';
 let goBackendUrl = null;
+// Tracks the most recent in-flight fetch so setBackend() can abort it when the
+// user switches backends before a slow response comes back (Issue #165).
+let currentController = null;
 const LANG_COLORS = {
   JavaScript:'#f1e05a',TypeScript:'#3178c6',Python:'#3572A5',Go:'#00ADD8',
   Rust:'#dea584',C:'#555555','C++':'#f34b7d','C#':'#178600',Java:'#b07219',
@@ -239,17 +242,39 @@ function safeHref(u) {
   } catch { return ''; }
 }
 
+// Reads an error response body as text first, since a proxy timeout or a
+// Render cold-start 502 can return an HTML/plain-text body instead of JSON —
+// calling res.json() directly on that throws an unhelpful parse error
+// (Issue #165). Falls back to the raw (truncated) text when it isn't JSON.
+async function parseErrorBody(res) {
+  let text = '';
+  try { text = await res.text(); } catch { return res.statusText; }
+  try {
+    const e = JSON.parse(text);
+    return e.detail || e.error || res.statusText;
+  } catch {
+    const trimmed = text.trim();
+    if (!trimmed) return res.statusText;
+    return trimmed.length > 300 ? trimmed.slice(0, 300) + '…' : trimmed;
+  }
+}
+
 async function fetchAnalyze() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { show('<span class="err">GitHub URL を入力してください</span>'); return; }
   show('<span class="spinner"></span> Analyzing…');
+  const controller = new AbortController();
+  currentController = controller;
   try {
-    const res = await fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(url)}`);
-    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || res.statusText); }
+    const res = await fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+    if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const result = await res.json();
     const fn = { user: renderUser, repo: renderRepo, pr: renderPR, issue: renderIssue }[result.type];
     fn ? fn(result.data) : show('<span class="err">未対応のURLタイプです</span>');
-  } catch (e) { show(`<span class="err">Error: ${esc(e.message)}</span>`); }
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    show(`<span class="err">Error: ${esc(e.message)}</span>`);
+  }
 }
 
 function show(html) { document.getElementById('analyzeContent').innerHTML = html; }
@@ -401,7 +426,7 @@ async function fetchReview() {
   sec.innerHTML = '';
   try {
     const res = await fetch(`/api/review?url=${encodeURIComponent(url)}`);
-    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || res.statusText); }
+    if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const r = await res.json();
     const cached = r.cached ? '<span class="badge cached">cached</span>' : '<span class="badge">live</span>';
     sec.innerHTML = `<div class="section-title">AI Review ${cached}</div><div class="review-box">${mdToHtml(r.markdown)}</div>`;
@@ -442,13 +467,18 @@ async function fetchBenchmark() {
   const url = document.getElementById('benchmarkInput').value.trim();
   if (!url) { showIn('benchmarkContent', '<span class="err">GitHub URL を入力してください</span>'); return; }
   showIn('benchmarkContent', '<span class="spinner"></span> Running benchmark…');
+  const controller = new AbortController();
+  currentController = controller;
   try {
-    const res = await fetch(`/api/benchmark?url=${encodeURIComponent(url)}`);
-    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || res.statusText); }
+    const res = await fetch(`/api/benchmark?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+    if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const d = await res.json();
     _benchHistory.unshift(d);
     renderBenchmark(d);
-  } catch(e) { showIn('benchmarkContent', `<span class="err">Error: ${esc(e.message)}</span>`); }
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    showIn('benchmarkContent', `<span class="err">Error: ${esc(e.message)}</span>`);
+  }
 }
 
 function renderBenchmark(d) {
@@ -505,15 +535,25 @@ function renderBenchmark(d) {
 
 async function initConfig() {
   try {
-    const cfg = await fetch('/api/config').then(r => r.json());
+    const res = await fetch('/api/config');
+    if (!res.ok) { throw new Error(await parseErrorBody(res)); }
+    const cfg = await res.json();
     if (cfg.go_backend_url) {
       goBackendUrl = cfg.go_backend_url;
       document.getElementById('backendToggle').style.display = 'flex';
     }
-  } catch (_) {}
+  } catch (e) {
+    // Non-fatal: without config the Go-backend toggle just stays hidden, but
+    // don't swallow the failure silently — log it so it's debuggable
+    // (Issue #165).
+    console.error('Failed to load /api/config:', e);
+  }
 }
 
 function setBackend(which) {
+  // Abort whatever request is still in flight so a slow response from the
+  // previously-selected backend can't render after the switch (Issue #165).
+  if (currentController) { currentController.abort(); currentController = null; }
   if (which === 'go' && goBackendUrl) {
     apiBase = goBackendUrl;
   } else {
@@ -544,11 +584,16 @@ async function fetchSummary() {
   const excludeForks = document.getElementById('excludeForks').checked;
   if (!url) { showIn('summaryContent','<span class="err">URL を入力してください</span>'); return; }
   showIn('summaryContent','<span class="spinner"></span> Loading…');
+  const controller = new AbortController();
+  currentController = controller;
   try {
-    const res = await fetch(`${apiBase}/api/summary?url=${encodeURIComponent(url)}&exclude_forks=${excludeForks}`);
-    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || e.error || res.statusText); }
+    const res = await fetch(`${apiBase}/api/summary?url=${encodeURIComponent(url)}&exclude_forks=${excludeForks}`, { signal: controller.signal });
+    if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     renderSummary(await res.json());
-  } catch(e) { showIn('summaryContent',`<span class="err">Error: ${esc(e.message)}</span>`); }
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    showIn('summaryContent',`<span class="err">Error: ${esc(e.message)}</span>`);
+  }
 }
 
 function showIn(id, html) { document.getElementById(id).innerHTML = html; }
@@ -585,17 +630,24 @@ async function fetchCompare() {
   const urlB = document.getElementById('compareB').value.trim();
   if (!urlA || !urlB) { showIn('compareContent','<span class="err">URL A と B を入力してください</span>'); return; }
   showIn('compareContent','<span class="spinner"></span> Loading…');
+  const controller = new AbortController();
+  currentController = controller;
   try {
     const [rA, rB] = await Promise.all([
-      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlA)}`).then(r => { if(!r.ok) throw new Error(urlA); return r.json(); }),
-      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlB)}`).then(r => { if(!r.ok) throw new Error(urlB); return r.json(); }),
+      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlA)}`, { signal: controller.signal })
+        .then(async r => { if(!r.ok) throw new Error(`${urlA}: ${await parseErrorBody(r)}`); return r.json(); }),
+      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlB)}`, { signal: controller.signal })
+        .then(async r => { if(!r.ok) throw new Error(`${urlB}: ${await parseErrorBody(r)}`); return r.json(); }),
     ]);
     if (rA.type !== rB.type) {
       showIn('compareContent','<span class="err">同じURLタイプ同士を比較してください（User vs User / Repo vs Repo）</span>');
       return;
     }
     renderCompare(rA, rB);
-  } catch(e) { showIn('compareContent',`<span class="err">Error: ${esc(e.message)}</span>`); }
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    showIn('compareContent',`<span class="err">Error: ${esc(e.message)}</span>`);
+  }
 }
 
 initConfig();
