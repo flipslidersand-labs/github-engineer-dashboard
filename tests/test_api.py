@@ -640,6 +640,38 @@ def test_review_ollama_fallback(tmp_path):
     mock_ol.assert_called_once()
 
 
+def test_review_does_not_fetch_reviews_or_files(tmp_path):
+    """/api/review should fetch the PR title with a single call, not full
+    get_pr() (which additionally fans out to /reviews and /files)."""
+    app = create_app(_settings(tmp_path, anthropic_key="test-anthropic-key"))
+    paths_hit: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths_hit.append(request.url.path)
+        path = request.url.path
+        if path == "/repos/torvalds/linux/pulls/1":
+            return httpx.Response(200, json={"title": "Fix bug"})
+        raise AssertionError(f"unexpected request: {path}")
+
+    def override_client(_token: str = Depends(require_token)):
+        gh = GitHubClient("abc", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    with TestClient(app) as c, patch("app.main.review_diff", return_value="## Summary\nOK."):
+        r = c.get(
+            "/api/review?url=https://github.com/torvalds/linux/pull/1",
+            headers={"X-GitHub-Token": "abc"},
+        )
+    assert r.status_code == 200
+    assert r.json()["pr_title"] == "Fix bug"
+    assert "/repos/torvalds/linux/pulls/1/reviews" not in paths_hit
+    assert "/repos/torvalds/linux/pulls/1/files" not in paths_hit
+
+
 def test_review_ollama_connect_error_returns_502(tmp_path):
     app = create_app(_settings(tmp_path, anthropic_key=None, ollama_url="http://localhost:11434"))
     counter: dict = {}
