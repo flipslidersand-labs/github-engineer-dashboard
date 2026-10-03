@@ -162,3 +162,140 @@ func TestGetRepoToleratesSubFetchFailures(t *testing.T) {
 		t.Errorf("OpenPRCount = %d, want 0", repo.OpenPRCount)
 	}
 }
+
+// TestGetUserActivityMarksPartialWhenRepoPageFails verifies Issue #153: a
+// failed repos-pagination page must mark UserActivity partial, not silently
+// understate total_stars/repo_languages as if the fetch fully succeeded.
+func TestGetUserActivityMarksPartialWhenRepoPageFails(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/octocat":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat"})
+		case "/users/octocat/events/public":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/users/octocat/repos":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limited"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	activity, err := client.GetUserActivity(context.Background(), "octocat")
+	if err != nil {
+		t.Fatalf("GetUserActivity: %v", err)
+	}
+	if !activity.Partial {
+		t.Error("Partial = false, want true when repo pagination fails")
+	}
+	if activity.TotalStars != 0 {
+		t.Errorf("TotalStars = %d, want 0", activity.TotalStars)
+	}
+}
+
+// TestGetUserActivityPaginatesAcrossMultiplePages verifies Issue #153: Go
+// must aggregate a user's repos across every page (like Python's
+// _get_all_user_repos), not stop after a single per_page=100 call, so a
+// 101+-repo user's total_stars/languages match the Python implementation.
+func TestGetUserActivityPaginatesAcrossMultiplePages(t *testing.T) {
+	const page1Repos = 100
+	const page2Repos = 20 // total 120 repos, across 2 pages
+
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/octocat":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat"})
+		case "/users/octocat/events/public":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/users/octocat/repos":
+			w.WriteHeader(http.StatusOK)
+			page := r.URL.Query().Get("page")
+			var repos []map[string]any
+			count := 0
+			switch page {
+			case "1":
+				count = page1Repos
+			case "2":
+				count = page2Repos
+			}
+			for i := 0; i < count; i++ {
+				repos = append(repos, map[string]any{
+					"name":             "repo",
+					"stargazers_count": 1,
+					"fork":             false,
+				})
+			}
+			_ = json.NewEncoder(w).Encode(repos)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	activity, err := client.GetUserActivity(context.Background(), "octocat")
+	if err != nil {
+		t.Fatalf("GetUserActivity: %v", err)
+	}
+	if activity.Partial {
+		t.Error("Partial = true, want false when all pages succeed")
+	}
+	if activity.TotalStars != page1Repos+page2Repos {
+		t.Errorf("TotalStars = %d, want %d", activity.TotalStars, page1Repos+page2Repos)
+	}
+}
+
+func TestGetPRMarksPartialWhenReviewsFetchFails(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/1":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number": 1, "title": "t", "state": "open",
+				"user":       map[string]string{"login": "u"},
+				"base":       map[string]string{"ref": "main"},
+				"head":       map[string]string{"ref": "feat"},
+				"created_at": "2026-08-01T00:00:00Z",
+			})
+		case "/repos/o/r/pulls/1/files":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]any{})
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+
+	pr, err := client.GetPR(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatalf("GetPR: %v", err)
+	}
+	if !pr.Partial {
+		t.Error("Partial = false, want true when reviews fetch fails")
+	}
+}
+
+func TestGetIssueMarksPartialWhenTimelineFetchFails(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/issues/1":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number": 1, "title": "t", "state": "open",
+				"user":       map[string]string{"login": "u"},
+				"created_at": "2026-08-01T00:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+
+	issue, err := client.GetIssue(context.Background(), "o", "r", 1)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if !issue.Partial {
+		t.Error("Partial = false, want true when timeline fetch fails")
+	}
+}

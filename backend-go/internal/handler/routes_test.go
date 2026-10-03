@@ -184,3 +184,51 @@ func TestAnalyzeCachesSecondRequest(t *testing.T) {
 		t.Errorf("upstream /users/octocat called %d times, want 1 (second request should hit cache)", calls)
 	}
 }
+
+// TestAnalyzeDoesNotCachePartialUserActivity verifies Issue #153: a
+// UserActivity built from a failed repos-pagination sub-fetch is marked
+// partial and must not be cached, so a repeat request re-fetches instead of
+// silently serving the degraded result for the whole cache TTL.
+func TestAnalyzeDoesNotCachePartialUserActivity(t *testing.T) {
+	repoCalls := 0
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/users/octocat":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "public_repos": 1})
+		case "/users/octocat/events/public":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/users/octocat/repos":
+			repoCalls++
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limited"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/analyze?url=https://github.com/octocat", nil)
+		req.Header.Set("X-GitHub-Token", "abc")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, body=%s", i, w.Code, w.Body.String())
+		}
+		var body struct {
+			Data struct {
+				Partial bool `json:"partial"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !body.Data.Partial {
+			t.Errorf("request %d: partial = false, want true", i)
+		}
+	}
+	if repoCalls != 2 {
+		t.Errorf("upstream /users/octocat/repos called %d times, want 2 (partial result must not be cached)", repoCalls)
+	}
+}

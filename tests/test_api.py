@@ -451,6 +451,159 @@ def test_analyze_issue_url(client):
     assert d["cached"] is False
 
 
+# ── Issue #153: degraded sub-fetches are marked partial and never cached ────
+
+
+def _app_with_handler(tmp_path, handler):
+    app = create_app(_settings(tmp_path))
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def override_client(_token: str = Depends(require_token)):
+        gh = GitHubClient(_token, client=http)
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    return app
+
+
+def test_user_activity_partial_when_repos_fetch_fails_and_not_cached(tmp_path):
+    """A failed repos-pagination sub-fetch must mark the activity partial and
+    must not be served back from cache on the next request (Issue #153)."""
+    calls = {"repos": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/users/octocat":
+            return httpx.Response(
+                200,
+                json={
+                    "login": "octocat",
+                    "public_repos": 3,
+                    "followers": 1,
+                    "following": 2,
+                },
+            )
+        if path == "/users/octocat/events/public":
+            return httpx.Response(200, json=[{"type": "PushEvent"}])
+        if path == "/users/octocat/repos":
+            calls["repos"] += 1
+            return httpx.Response(503, json={"message": "rate limited"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    app = _app_with_handler(tmp_path, handler)
+    with TestClient(app) as client:
+        h = {"X-GitHub-Token": "abc"}
+        r1 = client.get("/api/users/octocat/activity", headers=h)
+        assert r1.status_code == 200
+        body1 = r1.json()
+        assert body1["partial"] is True
+        assert body1["cached"] is False
+        assert body1["total_stars"] == 0
+
+        # A partial result must not have been cached: the next request
+        # re-fetches (and hits the failing repos endpoint again) instead of
+        # silently serving the degraded result forever within the TTL.
+        r2 = client.get("/api/users/octocat/activity", headers=h)
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert body2["cached"] is False
+        assert body2["partial"] is True
+        assert calls["repos"] == 2
+
+
+def test_analyze_pr_partial_when_reviews_fetch_fails_not_cached(tmp_path):
+    calls = {"reviews": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/repos/torvalds/linux/pulls/1":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 1,
+                    "title": "Fix bug",
+                    "state": "open",
+                    "user": {"login": "octocat"},
+                    "base": {"ref": "main"},
+                    "head": {"ref": "fix/bug"},
+                    "additions": 10,
+                    "deletions": 3,
+                    "changed_files": 2,
+                    "comments": 1,
+                    "review_comments": 0,
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "merged_at": None,
+                },
+            )
+        if path == "/repos/torvalds/linux/pulls/1/reviews":
+            calls["reviews"] += 1
+            return httpx.Response(503, json={"message": "rate limited"})
+        if path == "/repos/torvalds/linux/pulls/1/files":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"message": "not found"})
+
+    app = _app_with_handler(tmp_path, handler)
+    with TestClient(app) as client:
+        h = {"X-GitHub-Token": "abc"}
+        url = "https://github.com/torvalds/linux/pull/1"
+        r1 = client.get(f"/api/analyze?url={url}", headers=h)
+        assert r1.status_code == 200
+        d1 = r1.json()["data"]
+        assert d1["partial"] is True
+        assert d1["cached"] is False
+
+        r2 = client.get(f"/api/analyze?url={url}", headers=h)
+        d2 = r2.json()["data"]
+        assert d2["cached"] is False
+        assert d2["partial"] is True
+        assert calls["reviews"] == 2
+
+
+def test_analyze_issue_partial_when_timeline_fetch_fails_not_cached(tmp_path):
+    calls = {"timeline": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/repos/torvalds/linux/issues/5":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 5,
+                    "title": "Memory leak",
+                    "state": "open",
+                    "user": {"login": "octocat"},
+                    "labels": [],
+                    "assignees": [],
+                    "comments": 3,
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "closed_at": None,
+                },
+            )
+        if path == "/repos/torvalds/linux/issues/5/timeline":
+            calls["timeline"] += 1
+            return httpx.Response(503, json={"message": "rate limited"})
+        return httpx.Response(404, json={"message": "not found"})
+
+    app = _app_with_handler(tmp_path, handler)
+    with TestClient(app) as client:
+        h = {"X-GitHub-Token": "abc"}
+        url = "https://github.com/torvalds/linux/issues/5"
+        r1 = client.get(f"/api/analyze?url={url}", headers=h)
+        assert r1.status_code == 200
+        d1 = r1.json()["data"]
+        assert d1["partial"] is True
+        assert d1["cached"] is False
+
+        r2 = client.get(f"/api/analyze?url={url}", headers=h)
+        d2 = r2.json()["data"]
+        assert d2["cached"] is False
+        assert d2["partial"] is True
+        assert calls["timeline"] == 2
+
+
 # ── /api/summary (Issue #76) ─────────────────────────────────────────────────
 
 

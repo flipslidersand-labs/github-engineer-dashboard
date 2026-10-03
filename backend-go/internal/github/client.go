@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	defaultBaseURL  = "https://api.github.com"
-	reposPageSize   = 100
-	reposMaxPages   = 10
+	defaultBaseURL = "https://api.github.com"
+	reposPageSize  = 100
+	reposMaxPages  = 10
 )
 
 // Error is returned when GitHub responds with a non-2xx status.
@@ -164,12 +164,13 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 	}
 
 	var (
-		user      ghUser
-		events    []ghEvent
-		repos     []ghRepo
-		userErr   error
-		eventsErr error
-		wg        sync.WaitGroup
+		user         ghUser
+		events       []ghEvent
+		repos        []ghRepo
+		reposPartial bool
+		userErr      error
+		eventsErr    error
+		wg           sync.WaitGroup
 	)
 
 	wg.Add(3)
@@ -193,7 +194,7 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 	}()
 	go func() {
 		defer wg.Done()
-		c.tryGet(ctx, "/users/"+username+"/repos?per_page=100", &repos)
+		repos, reposPartial = paginateReposTolerant[ghRepo](ctx, c, "/users/"+username+"/repos")
 	}()
 	wg.Wait()
 
@@ -202,6 +203,9 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 	}
 	if eventsErr != nil {
 		return nil, eventsErr
+	}
+	if reposPartial {
+		log.Printf("GetUserActivity(%s): partial data, repo pagination failed", username)
 	}
 
 	eventCounts := map[string]int{}
@@ -261,20 +265,23 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 		TotalEvents:   len(events),
 		RepoLanguages: repoLanguages,
 		RecentForks:   orEmpty(recentForks),
+		Partial:       reposPartial,
 	}, nil
 }
 
 // GetRepo returns structured data for a repository.
 func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.RepoInfo, error) {
 	type ghRepo struct {
-		Owner           struct{ Login string `json:"login"` } `json:"owner"`
-		Name            string   `json:"name"`
-		FullName        string   `json:"full_name"`
-		Description     *string  `json:"description"`
-		StargazersCount int      `json:"stargazers_count"`
-		ForksCount      int      `json:"forks_count"`
-		OpenIssuesCount int      `json:"open_issues_count"`
-		Language        *string  `json:"language"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name            string  `json:"name"`
+		FullName        string  `json:"full_name"`
+		Description     *string `json:"description"`
+		StargazersCount int     `json:"stargazers_count"`
+		ForksCount      int     `json:"forks_count"`
+		OpenIssuesCount int     `json:"open_issues_count"`
+		Language        *string `json:"language"`
 		License         *struct {
 			SPDXID string `json:"spdx_id"`
 			Name   string `json:"name"`
@@ -406,22 +413,30 @@ func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.Rep
 // GetPR returns structured data for a pull request.
 func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (*model.PRInfo, error) {
 	type ghPR struct {
-		Number        int     `json:"number"`
-		Title         string  `json:"title"`
-		State         string  `json:"state"`
-		User          struct{ Login string `json:"login"` } `json:"user"`
-		Base          struct{ Ref string `json:"ref"` } `json:"base"`
-		Head          struct{ Ref string `json:"ref"` } `json:"head"`
-		Additions     int     `json:"additions"`
-		Deletions     int     `json:"deletions"`
-		ChangedFiles  int     `json:"changed_files"`
-		Comments      int     `json:"comments"`
-		ReviewComments int    `json:"review_comments"`
-		CreatedAt     string  `json:"created_at"`
-		MergedAt      *string `json:"merged_at"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Head struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+		Additions      int     `json:"additions"`
+		Deletions      int     `json:"deletions"`
+		ChangedFiles   int     `json:"changed_files"`
+		Comments       int     `json:"comments"`
+		ReviewComments int     `json:"review_comments"`
+		CreatedAt      string  `json:"created_at"`
+		MergedAt       *string `json:"merged_at"`
 	}
 	type ghReview struct {
-		User        struct{ Login string `json:"login"` } `json:"user"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 		SubmittedAt string `json:"submitted_at"`
 	}
 	type ghFile struct {
@@ -433,20 +448,30 @@ func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (
 	base := fmt.Sprintf("/repos/%s/%s/pulls/%d", username, repo, number)
 
 	var (
-		prData  []byte
-		reviews []ghReview
-		files   []ghFile
-		prErr   error
-		wg      sync.WaitGroup
+		prData    []byte
+		reviews   []ghReview
+		files     []ghFile
+		prErr     error
+		okReviews bool
+		okFiles   bool
+		wg        sync.WaitGroup
 	)
 	wg.Add(3)
 	go func() { defer wg.Done(); prData, prErr = c.get(ctx, base) }()
-	go func() { defer wg.Done(); c.tryGet(ctx, base+"/reviews", &reviews) }()
-	go func() { defer wg.Done(); c.tryGet(ctx, base+"/files?per_page=30", &files) }()
+	go func() { defer wg.Done(); okReviews = c.tryGet(ctx, base+"/reviews", &reviews) }()
+	go func() { defer wg.Done(); okFiles = c.tryGet(ctx, base+"/files?per_page=30", &files) }()
 	wg.Wait()
 
 	if prErr != nil {
 		return nil, prErr
+	}
+
+	partial := !okReviews || !okFiles
+	if partial {
+		log.Printf(
+			"GetPR(%s/%s#%d): partial data, reviews=%v files=%v",
+			username, repo, number, okReviews, okFiles,
+		)
 	}
 	var pr ghPR
 	if err := json.Unmarshal(prData, &pr); err != nil {
@@ -517,6 +542,7 @@ func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (
 		ChangedFilesDetail: changedFilesDetail,
 		CreatedAt:          pr.CreatedAt,
 		MergedAt:           pr.MergedAt,
+		Partial:            partial,
 	}, nil
 }
 
@@ -533,12 +559,18 @@ func (c *Client) GetPRDiff(ctx context.Context, username, repo string, number in
 // GetIssue returns structured data for an issue.
 func (c *Client) GetIssue(ctx context.Context, username, repo string, number int) (*model.IssueInfo, error) {
 	type ghIssue struct {
-		Number    int     `json:"number"`
-		Title     string  `json:"title"`
-		State     string  `json:"state"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
-		Labels    []struct{ Name string `json:"name"` } `json:"labels"`
-		Assignees []struct{ Login string `json:"login"` } `json:"assignees"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Assignees []struct {
+			Login string `json:"login"`
+		} `json:"assignees"`
 		Comments  int     `json:"comments"`
 		CreatedAt string  `json:"created_at"`
 		ClosedAt  *string `json:"closed_at"`
@@ -565,7 +597,11 @@ func (c *Client) GetIssue(ctx context.Context, username, repo string, number int
 	}
 
 	var timeline []ghTimelineEvent
-	c.tryGet(ctx, base+"/timeline?per_page=100", &timeline)
+	okTimeline := c.tryGet(ctx, base+"/timeline?per_page=100", &timeline)
+	partial := !okTimeline
+	if partial {
+		log.Printf("GetIssue(%s/%s#%d): partial data, failed sub-fetch: timeline", username, repo, number)
+	}
 
 	relatedSet := map[int]bool{}
 	for _, e := range timeline {
@@ -598,6 +634,7 @@ func (c *Client) GetIssue(ctx context.Context, username, repo string, number int
 		RelatedPRs: relatedPRs,
 		CreatedAt:  issue.CreatedAt,
 		ClosedAt:   issue.ClosedAt,
+		Partial:    partial,
 	}, nil
 }
 
@@ -690,6 +727,36 @@ func (c *Client) aggregateRepoList(ctx context.Context, basePath string, exclude
 		LanguageDistribution: langCounts,
 		ForksExcluded:        excludeForks,
 	}, truncated, nil
+}
+
+// paginateReposTolerant paginates a repos-list endpoint (e.g.
+// "/users/{name}/repos") the same way aggregateRepoList does, but treats a
+// failed page fetch as a sub-fetch failure rather than a hard error: it
+// returns whatever repos were gathered before the failure plus partial=true,
+// mirroring the Python client's _get_all_user_repos/_try_get_json behavior.
+// Used by GetUserActivity, where repos are a best-effort enrichment of the
+// user profile rather than the primary resource.
+func paginateReposTolerant[T any](ctx context.Context, c *Client, basePath string) ([]T, bool) {
+	var all []T
+	sep := "?"
+	if strings.Contains(basePath, "?") {
+		sep = "&"
+	}
+	for page := 1; page <= reposMaxPages; page++ {
+		path := fmt.Sprintf("%s%sper_page=%d&page=%d", basePath, sep, reposPageSize, page)
+		var batch []T
+		if !c.tryGet(ctx, path, &batch) {
+			return all, true
+		}
+		if len(batch) == 0 {
+			break
+		}
+		all = append(all, batch...)
+		if len(batch) < reposPageSize {
+			break
+		}
+	}
+	return all, false
 }
 
 // topN returns the top n entries from counts sorted by value descending.
