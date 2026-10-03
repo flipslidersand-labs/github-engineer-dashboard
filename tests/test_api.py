@@ -318,6 +318,12 @@ def test_unknown_user_returns_404(client):
     assert r.status_code == 404
 
 
+def test_user_activity_rejects_invalid_username(client):
+    """Issue #151: this route bypassed the owner validation added in #129."""
+    r = client.get("/api/users/-invalid/activity", headers={"X-GitHub-Token": "abc"})
+    assert r.status_code == 422
+
+
 # ── /api/analyze ──────────────────────────────────────────────────────────────
 
 

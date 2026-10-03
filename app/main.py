@@ -46,7 +46,7 @@ from .models import (
     UserActivity,
 )
 from .reviewer import review_diff, review_diff_ollama
-from .url_parser import UrlType, parse_github_url
+from .url_parser import UrlType, is_valid_owner, parse_github_url
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
@@ -104,7 +104,10 @@ async def lifespan(app: FastAPI):
     app.state.cache = SQLiteCache(settings.cache_db, settings.cache_ttl_seconds)
     # Shared across all requests so GitHubClient reuses connections (keep-alive)
     # instead of a fresh TCP/TLS handshake to api.github.com per request.
-    app.state.http_client = httpx.Client(timeout=10.0)
+    # follow_redirects: a renamed/transferred repo 301s; without this the
+    # redirect isn't followed and _get sees the (often empty-bodied) 301
+    # response itself as a "success" (< 400) — see Issue #157.
+    app.state.http_client = httpx.Client(timeout=10.0, follow_redirects=True)
     try:
         yield
     finally:
@@ -246,6 +249,8 @@ def _register_routes(app: FastAPI) -> None:
         client: GitHubClient = Depends(get_client),
         cache: SQLiteCache = Depends(get_cache),
     ) -> UserActivity:
+        if not is_valid_owner(username):
+            raise HTTPException(status_code=422, detail="Invalid GitHub username.")
         return _cache_fetch(
             cache,
             f"{client.token_fingerprint}:activity:{username.lower()}",
