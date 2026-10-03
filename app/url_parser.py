@@ -18,11 +18,11 @@ _OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
-def _is_valid_owner(name: str) -> bool:
+def is_valid_owner(name: str) -> bool:
     return bool(_OWNER_RE.match(name))
 
 
-def _is_valid_repo(name: str) -> bool:
+def is_valid_repo(name: str) -> bool:
     return bool(_REPO_RE.match(name)) and name not in (".", "..")
 
 
@@ -62,18 +62,18 @@ def parse_github_url(raw: str) -> ParsedGitHubUrl:
     # /orgs/{org}[/...] — organization landing page. GitHub reserves the
     # "orgs" path segment, so it can never collide with a real user/repo.
     if len(parts) >= 2 and parts[0] == "orgs":
-        if not _is_valid_owner(parts[1]):
+        if not is_valid_owner(parts[1]):
             return ParsedGitHubUrl(type=UrlType.UNKNOWN, params={})
         return ParsedGitHubUrl(type=UrlType.ORG, params={"org": parts[1]})
 
     if len(parts) == 1:
-        if not _is_valid_owner(parts[0]):
+        if not is_valid_owner(parts[0]):
             return ParsedGitHubUrl(type=UrlType.UNKNOWN, params={})
         return ParsedGitHubUrl(type=UrlType.USER, params={"username": parts[0]})
 
     if len(parts) >= 4:
         owner, repo, section, number = parts[0], parts[1], parts[2], parts[3]
-        if _is_valid_owner(owner) and _is_valid_repo(repo):
+        if is_valid_owner(owner) and is_valid_repo(repo):
             if section == "pull" and number.isdigit():
                 return ParsedGitHubUrl(
                     type=UrlType.PR,
@@ -86,7 +86,7 @@ def parse_github_url(raw: str) -> ParsedGitHubUrl:
                 )
 
     if len(parts) >= 2:
-        if not _is_valid_owner(parts[0]) or not _is_valid_repo(parts[1]):
+        if not is_valid_owner(parts[0]) or not is_valid_repo(parts[1]):
             return ParsedGitHubUrl(type=UrlType.UNKNOWN, params={})
         return ParsedGitHubUrl(
             type=UrlType.REPO,
