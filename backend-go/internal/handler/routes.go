@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
@@ -94,8 +96,8 @@ func (d *Deps) userActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := newClient(r, d)
-	v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(username),
-		func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), username) })
+	v, cached, err := fromCache(d.Cache, r.Context(), client.TokenFingerprint+":activity:"+strings.ToLower(username),
+		func(ctx context.Context) (*model.UserActivity, error) { return client.GetUserActivity(ctx, username) })
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -125,8 +127,8 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	switch parsed.typ {
 	case urlTypeUser:
 		u := parsed.username
-		v, cached, err := fromCache(d.Cache, client.TokenFingerprint+":activity:"+strings.ToLower(u),
-			func() (*model.UserActivity, error) { return client.GetUserActivity(r.Context(), u) })
+		v, cached, err := fromCache(d.Cache, r.Context(), client.TokenFingerprint+":activity:"+strings.ToLower(u),
+			func(ctx context.Context) (*model.UserActivity, error) { return client.GetUserActivity(ctx, u) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -135,8 +137,8 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	case urlTypeRepo:
 		u, repo := parsed.username, parsed.repo
 		key := fmt.Sprintf("%s:repo:%s/%s", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo))
-		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.RepoInfo, error) { return client.GetRepo(r.Context(), u, repo) })
+		v, cached, err := fromCache(d.Cache, r.Context(), key,
+			func(ctx context.Context) (*model.RepoInfo, error) { return client.GetRepo(ctx, u, repo) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -145,8 +147,8 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	case urlTypePR:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
 		key := fmt.Sprintf("%s:pr:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
-		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.PRInfo, error) { return client.GetPR(r.Context(), u, repo, num) })
+		v, cached, err := fromCache(d.Cache, r.Context(), key,
+			func(ctx context.Context) (*model.PRInfo, error) { return client.GetPR(ctx, u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -155,8 +157,8 @@ func (d *Deps) analyze(w http.ResponseWriter, r *http.Request) {
 	case urlTypeIssue:
 		u, repo, num := parsed.username, parsed.repo, parsed.number
 		key := fmt.Sprintf("%s:issue:%s/%s/%d", client.TokenFingerprint, strings.ToLower(u), strings.ToLower(repo), num)
-		v, cached, err := fromCache(d.Cache, key,
-			func() (*model.IssueInfo, error) { return client.GetIssue(r.Context(), u, repo, num) })
+		v, cached, err := fromCache(d.Cache, r.Context(), key,
+			func(ctx context.Context) (*model.IssueInfo, error) { return client.GetIssue(ctx, u, repo, num) })
 		if err == nil {
 			v.Cached = cached
 		}
@@ -192,18 +194,18 @@ func (d *Deps) summary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := fmt.Sprintf("%s:summary:%s:forks=%d", client.TokenFingerprint, ownerKey, boolToInt(excludeForks))
-	var fetchFn func() (*model.CrossRepoSummary, error)
+	var fetchFn func(context.Context) (*model.CrossRepoSummary, error)
 	if parsed.typ == urlTypeUser {
-		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetUserReposSummary(r.Context(), parsed.username, excludeForks)
+		fetchFn = func(ctx context.Context) (*model.CrossRepoSummary, error) {
+			return client.GetUserReposSummary(ctx, parsed.username, excludeForks)
 		}
 	} else {
-		fetchFn = func() (*model.CrossRepoSummary, error) {
-			return client.GetOrgReposSummary(r.Context(), parsed.org, excludeForks)
+		fetchFn = func(ctx context.Context) (*model.CrossRepoSummary, error) {
+			return client.GetOrgReposSummary(ctx, parsed.org, excludeForks)
 		}
 	}
 
-	v, cached, err := fromCache(d.Cache, key, fetchFn)
+	v, cached, err := fromCache(d.Cache, r.Context(), key, fetchFn)
 	if err != nil {
 		writeGitHubError(w, err)
 		return
@@ -320,7 +322,12 @@ type partialResult interface {
 	IsPartial() bool
 }
 
-func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T, bool, error) {
+// fetchTimeout bounds the detached context used for a shared singleflight
+// fetch (see fromCache) — long enough for a real upstream call, short enough
+// that a truly stuck fetch doesn't leak the goroutine forever.
+const fetchTimeout = 30 * time.Second
+
+func fromCache[T any](c *cache.Cache, ctx context.Context, key string, fetch func(context.Context) (*T, error)) (*T, bool, error) {
 	var dst T
 	if c.Get(key, &dst) {
 		return &dst, true, nil
@@ -332,7 +339,14 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 		if c.Get(key, &dst2) {
 			return &dst2, nil
 		}
-		result, err := fetch()
+		// Detach from the triggering caller's context: this fetch is shared
+		// via fetchGroup across every concurrent request for this key, so
+		// one caller disconnecting must not cancel it (and therefore fail
+		// every other waiter) — Issue #152. Still bounded by a timeout so a
+		// stuck upstream can't hang this goroutine indefinitely.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		defer cancel()
+		result, err := fetch(fetchCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -344,7 +358,13 @@ func fromCache[T any](c *cache.Cache, key string, fetch func() (*T, error)) (*T,
 	if err != nil {
 		return nil, false, err
 	}
-	return v.(*T), false, nil
+	// v may be the exact same *T shared across every caller that joined this
+	// fetch via fetchGroup (singleflight hands the identical result to all
+	// of them). Callers set .Cached on the pointer they get back, so return
+	// each caller its own copy — otherwise concurrent joined callers race on
+	// that field (Issue #152).
+	result := *v.(*T)
+	return &result, false, nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
