@@ -42,7 +42,7 @@ class GitHubClient:
         # A shared/injected client outlives this GitHubClient (it's reused
         # across requests for connection pooling) and must not be closed here.
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or httpx.Client(timeout=timeout, follow_redirects=True)
         # Cache keys must be scoped per-token: without this, a response
         # fetched with one token gets cached under a token-independent key
         # (e.g. "repo:owner/name") and served to any other caller presenting
@@ -54,9 +54,24 @@ class GitHubClient:
     def _get(self, path: str) -> httpx.Response:
         resp = self._client.get(f"{self._base_url}{path}", headers=self._headers)
         if resp.status_code >= 400:
-            message = resp.json().get("message", resp.text) if resp.content else resp.text
-            raise GitHubError(resp.status_code, message)
+            raise GitHubError(resp.status_code, self._error_message(resp))
         return resp
+
+    @staticmethod
+    def _error_message(resp: httpx.Response) -> str:
+        """Best-effort error message from a non-2xx response.
+
+        GitHub normally returns a JSON body with a "message" field, but a
+        proxy/edge failure (e.g. a 502 from Render) can return an HTML or
+        empty body instead — resp.json() would raise JSONDecodeError in that
+        case, so fall back to the raw text (Issue #157).
+        """
+        if not resp.content:
+            return resp.text
+        try:
+            return resp.json().get("message", resp.text)
+        except ValueError:
+            return resp.text
 
     def _try_get_json(self, path: str):
         """Return JSON on success, None on any error (GitHubError or network)."""
@@ -330,8 +345,7 @@ class GitHubClient:
         with self._client.stream("GET", url, headers=headers) as resp:
             if resp.status_code >= 400:
                 resp.read()
-                message = resp.json().get("message", resp.text) if resp.content else resp.text
-                raise GitHubError(resp.status_code, message)
+                raise GitHubError(resp.status_code, self._error_message(resp))
             for chunk in resp.iter_bytes():
                 remaining = max_bytes - total
                 if len(chunk) > remaining:
