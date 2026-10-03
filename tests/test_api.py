@@ -265,6 +265,26 @@ def test_healthz_public(client):
     assert r.json()["status"] == "ok"
 
 
+def test_response_includes_request_id_header(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.headers.get("X-Request-ID")
+
+
+def test_incoming_request_id_is_echoed_back(client):
+    # An incoming X-Request-ID is reused rather than replaced, so a caller
+    # that already has a correlation ID keeps it end to end (Issue #164).
+    r = client.get("/healthz", headers={"X-Request-ID": "test-fixed-id-123"})
+    assert r.status_code == 200
+    assert r.headers["X-Request-ID"] == "test-fixed-id-123"
+
+
+def test_request_id_differs_across_requests_without_incoming_header(client):
+    r1 = client.get("/healthz")
+    r2 = client.get("/healthz")
+    assert r1.headers["X-Request-ID"] != r2.headers["X-Request-ID"]
+
+
 def test_requires_token(client):
     r = client.get("/api/rate-limit")
     assert r.status_code == 401
