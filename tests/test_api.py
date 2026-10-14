@@ -265,6 +265,26 @@ def test_healthz_public(client):
     assert r.json()["status"] == "ok"
 
 
+def test_response_includes_request_id_header(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.headers.get("X-Request-ID")
+
+
+def test_incoming_request_id_is_echoed_back(client):
+    # An incoming X-Request-ID is reused rather than replaced, so a caller
+    # that already has a correlation ID keeps it end to end (Issue #164).
+    r = client.get("/healthz", headers={"X-Request-ID": "test-fixed-id-123"})
+    assert r.status_code == 200
+    assert r.headers["X-Request-ID"] == "test-fixed-id-123"
+
+
+def test_request_id_differs_across_requests_without_incoming_header(client):
+    r1 = client.get("/healthz")
+    r2 = client.get("/healthz")
+    assert r1.headers["X-Request-ID"] != r2.headers["X-Request-ID"]
+
+
 def test_requires_token(client):
     r = client.get("/api/rate-limit")
     assert r.status_code == 401
@@ -618,6 +638,38 @@ def test_review_ollama_fallback(tmp_path):
     assert r.status_code == 200
     assert r.json()["markdown"] == "## Summary\nOllama review."
     mock_ol.assert_called_once()
+
+
+def test_review_does_not_fetch_reviews_or_files(tmp_path):
+    """/api/review should fetch the PR title with a single call, not full
+    get_pr() (which additionally fans out to /reviews and /files)."""
+    app = create_app(_settings(tmp_path, anthropic_key="test-anthropic-key"))
+    paths_hit: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths_hit.append(request.url.path)
+        path = request.url.path
+        if path == "/repos/torvalds/linux/pulls/1":
+            return httpx.Response(200, json={"title": "Fix bug"})
+        raise AssertionError(f"unexpected request: {path}")
+
+    def override_client(_token: str = Depends(require_token)):
+        gh = GitHubClient("abc", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    with TestClient(app) as c, patch("app.main.review_diff", return_value="## Summary\nOK."):
+        r = c.get(
+            "/api/review?url=https://github.com/torvalds/linux/pull/1",
+            headers={"X-GitHub-Token": "abc"},
+        )
+    assert r.status_code == 200
+    assert r.json()["pr_title"] == "Fix bug"
+    assert "/repos/torvalds/linux/pulls/1/reviews" not in paths_hit
+    assert "/repos/torvalds/linux/pulls/1/files" not in paths_hit
 
 
 def test_review_ollama_connect_error_returns_502(tmp_path):
