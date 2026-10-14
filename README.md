@@ -47,7 +47,7 @@ Python (FastAPI) と Go の 2 バックエンドを搭載し、レイテンシ�
 | Frontend / フロント | Vanilla HTML + CSS + Fetch API                    |
 | AI Review        | Claude Haiku (`ANTHROPIC_API_KEY`) / Ollama fallback |
 | Deploy / デプロイ | Render (`render.yaml` Blueprint)                    |
-| Tests / テスト   | pytest (35 tests)                                    |
+| Tests / テスト   | pytest (54 tests, coverage gate ≥85%) / Go (coverage gate ≥40%) |
 
 ## Endpoints / エンドポイント
 
@@ -117,13 +117,16 @@ Render Dashboard → New → Blueprint → select this repository / このリポ
 | Service / サービス | Variable / 変数  | Note / 説明                                   |
 | ------------------ | ---------------- | --------------------------------------------- |
 | Python             | `GITHUB_TOKEN`   | Fine-grained PAT                              |
-| Python             | `CORS_ORIGINS`   | Auto-injected (fromService) / 自動設定        |
+| Python             | `CORS_ORIGINS`   | Manual (`sync: false`) / 手動設定             |
 | Python             | `GO_BACKEND_URL` | Auto-injected (fromService) / 自動設定        |
 | Go                 | `GITHUB_TOKEN`   | Fine-grained PAT                              |
 | Go                 | `CORS_ORIGINS`   | Auto-injected (fromService) / 自動設定        |
 
-`fromService` injects URLs automatically after both services are deployed.  
-`fromService` により、両サービスのデプロイ後に URL が自動注入される。
+`fromService` injects URLs automatically after both services are deployed. Note that in `render.yaml` only the **Go** service's `CORS_ORIGINS` uses `fromService` (pointed at the Python service's URL); the **Python** service's `CORS_ORIGINS` is `sync: false` and must be set manually in the Render Dashboard.  
+`fromService` により、両サービスのデプロイ後に URL が自動注入される。ただし `render.yaml` で `fromService` が使われているのは **Go** 側の `CORS_ORIGINS`（Python の URL を参照）のみで、**Python** 側の `CORS_ORIGINS` は `sync: false` のため Render Dashboard で手動設定が必要。
+
+> **Cache volatility / キャッシュの揮発性**: `CACHE_DB` defaults to `/tmp/cache.db` (`/tmp/cache-go.db` for Go) on Render, which does not survive a service restart or redeploy — the SQLite TTL cache is cleared each time. This is expected (no persistent disk is configured) and only affects rate-limit mitigation, not correctness.  
+> Render 上では `CACHE_DB` は `/tmp/cache.db`（Go は `/tmp/cache-go.db`）が既定で、サービス再起動・再デプロイのたびに消える（永続ディスク未設定のため）。SQLite TTL キャッシュは毎回リセットされる想定の動作で、レート制限緩和にのみ影響し、正当性には影響しない。
 
 ## Repository Structure / リポジトリ構成
 
@@ -146,6 +149,6 @@ backend-go/
   internal/model/types.go     Response types (matches Python) / レスポンス型（Python 版と一致）
 docs/
   recording-guide.md  Demo GIF recording guide / デモ GIF 録画手順
-tests/              pytest suite (35 tests) / pytest スイート（35 tests）
+tests/              pytest suite (54 tests) / pytest スイート（54 tests）
 render.yaml         Render Blueprint (Python + Go services) / Render Blueprint（Python + Go 両サービス）
 ```
