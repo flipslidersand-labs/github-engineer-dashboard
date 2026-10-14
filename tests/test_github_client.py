@@ -6,7 +6,9 @@ from app.github_client import GitHubClient, GitHubError
 
 def make_client(handler) -> GitHubClient:
     transport = httpx.MockTransport(handler)
-    http = httpx.Client(transport=transport)
+    # follow_redirects=True mirrors the shared client built in app/main.py's
+    # lifespan (Issue #157) so tests exercise the same redirect behavior.
+    http = httpx.Client(transport=transport, follow_redirects=True)
     return GitHubClient("test-token", client=http)
 
 
@@ -113,3 +115,60 @@ def test_get_pr_diff_truncates_at_max_bytes():
     assert diff.startswith("x" * 100)
     assert "truncated" in diff
     assert len(diff) < len(body)
+
+
+def test_get_repo_follows_redirect_on_renamed_repo():
+    """A renamed/transferred repo 301s to its new location (Issue #157);
+    the shared client must follow it instead of treating the redirect
+    itself (often empty-bodied) as a successful < 400 response."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/octocat/old-name":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://api.github.com/repos/octocat/new-name"},
+            )
+        if request.url.path == "/repos/octocat/new-name":
+            return httpx.Response(
+                200,
+                json={
+                    "owner": {"login": "octocat"},
+                    "name": "new-name",
+                    "full_name": "octocat/new-name",
+                },
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = make_client(handler)
+    repo = client.get_repo("octocat", "old-name")
+    assert repo["name"] == "new-name"
+    assert repo["full_name"] == "octocat/new-name"
+
+
+def test_non_json_error_body_raises_clean_github_error():
+    """An HTML error page from a proxy/edge failure (e.g. Render 502) must
+    not let JSONDecodeError escape uncaught — it should raise GitHubError
+    with the raw text as the message instead (Issue #157)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html><body>Bad Gateway</body></html>")
+
+    client = make_client(handler)
+    with pytest.raises(GitHubError) as exc:
+        client.get_rate_limit()
+    assert exc.value.status_code == 502
+    assert "Bad Gateway" in exc.value.message
+
+
+def test_non_json_error_body_in_pr_diff_raises_clean_github_error():
+    """Same non-JSON-error-body guard applies to the streaming _get used by
+    get_pr_diff, which has its own status-check/raise path."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html><body>Bad Gateway</body></html>")
+
+    client = make_client(handler)
+    with pytest.raises(GitHubError) as exc:
+        client.get_pr_diff("octocat", "hello", 1)
+    assert exc.value.status_code == 502
+    assert "Bad Gateway" in exc.value.message
