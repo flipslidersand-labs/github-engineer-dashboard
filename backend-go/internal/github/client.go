@@ -289,14 +289,16 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 // GetRepo returns structured data for a repository.
 func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.RepoInfo, error) {
 	type ghRepo struct {
-		Owner           struct{ Login string `json:"login"` } `json:"owner"`
-		Name            string   `json:"name"`
-		FullName        string   `json:"full_name"`
-		Description     *string  `json:"description"`
-		StargazersCount int      `json:"stargazers_count"`
-		ForksCount      int      `json:"forks_count"`
-		OpenIssuesCount int      `json:"open_issues_count"`
-		Language        *string  `json:"language"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name            string  `json:"name"`
+		FullName        string  `json:"full_name"`
+		Description     *string `json:"description"`
+		StargazersCount int     `json:"stargazers_count"`
+		ForksCount      int     `json:"forks_count"`
+		OpenIssuesCount int     `json:"open_issues_count"`
+		Language        *string `json:"language"`
 		License         *struct {
 			SPDXID string `json:"spdx_id"`
 			Name   string `json:"name"`
@@ -428,22 +430,30 @@ func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.Rep
 // GetPR returns structured data for a pull request.
 func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (*model.PRInfo, error) {
 	type ghPR struct {
-		Number        int     `json:"number"`
-		Title         string  `json:"title"`
-		State         string  `json:"state"`
-		User          struct{ Login string `json:"login"` } `json:"user"`
-		Base          struct{ Ref string `json:"ref"` } `json:"base"`
-		Head          struct{ Ref string `json:"ref"` } `json:"head"`
-		Additions     int     `json:"additions"`
-		Deletions     int     `json:"deletions"`
-		ChangedFiles  int     `json:"changed_files"`
-		Comments      int     `json:"comments"`
-		ReviewComments int    `json:"review_comments"`
-		CreatedAt     string  `json:"created_at"`
-		MergedAt      *string `json:"merged_at"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Head struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+		Additions      int     `json:"additions"`
+		Deletions      int     `json:"deletions"`
+		ChangedFiles   int     `json:"changed_files"`
+		Comments       int     `json:"comments"`
+		ReviewComments int     `json:"review_comments"`
+		CreatedAt      string  `json:"created_at"`
+		MergedAt       *string `json:"merged_at"`
 	}
 	type ghReview struct {
-		User        struct{ Login string `json:"login"` } `json:"user"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 		SubmittedAt string `json:"submitted_at"`
 	}
 	type ghFile struct {
@@ -555,12 +565,18 @@ func (c *Client) GetPRDiff(ctx context.Context, username, repo string, number in
 // GetIssue returns structured data for an issue.
 func (c *Client) GetIssue(ctx context.Context, username, repo string, number int) (*model.IssueInfo, error) {
 	type ghIssue struct {
-		Number    int     `json:"number"`
-		Title     string  `json:"title"`
-		State     string  `json:"state"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
-		Labels    []struct{ Name string `json:"name"` } `json:"labels"`
-		Assignees []struct{ Login string `json:"login"` } `json:"assignees"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Assignees []struct {
+			Login string `json:"login"`
+		} `json:"assignees"`
 		Comments  int     `json:"comments"`
 		CreatedAt string  `json:"created_at"`
 		ClosedAt  *string `json:"closed_at"`
