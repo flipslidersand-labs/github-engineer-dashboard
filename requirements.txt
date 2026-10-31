@@ -5,5 +5,5 @@ pydantic~=2.13.5
 anthropic~=0.120.0
 
 # dev / test
-pytest~=9.1.1
+pytest~=9.2.0
 pytest-cov~=7.1.0
