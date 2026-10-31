@@ -1,9 +1,9 @@
-fastapi~=0.139.0
+fastapi~=0.162.0
 uvicorn[standard]~=0.54.0
 httpx~=0.28.1
 pydantic~=2.13.5
-anthropic~=0.120.0
+anthropic~=2.3.0
 
 # dev / test
-pytest~=9.1.1
+pytest~=9.2.0
 pytest-cov~=7.1.0
