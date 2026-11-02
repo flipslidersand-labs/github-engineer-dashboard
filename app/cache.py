@@ -11,6 +11,7 @@ import json
 import sqlite3
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -22,11 +23,17 @@ class SQLiteCache:
         ttl_seconds: int = 300,
         *,
         clock: Callable[[], float] = time.time,
+        purge_interval: float = 60.0,
     ) -> None:
         self._ttl = ttl_seconds
         self._clock = clock
+        self._purge_interval = purge_interval
+        self._next_purge = clock() + purge_interval
         self._lock = threading.Lock()
-        self._key_locks: dict[str, threading.Lock] = {}
+        # Weak values: a lock disappears once no caller holds it, so the dict stays bounded.
+        self._key_locks: weakref.WeakValueDictionary[str, threading.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self._key_locks_guard = threading.Lock()
         # check_same_thread=False: FastAPI serves requests across a threadpool;
         # a process-wide lock serializes access to this single connection.
@@ -57,7 +64,8 @@ class SQLiteCache:
         return json.loads(value)
 
     def set(self, key: str, value: Any) -> None:
-        expires_at = self._clock() + self._ttl
+        now = self._clock()
+        expires_at = now + self._ttl
         payload = json.dumps(value)
         with self._lock:
             self._conn.execute(
@@ -66,6 +74,11 @@ class SQLiteCache:
                 "expires_at = excluded.expires_at",
                 (key, payload, expires_at),
             )
+            # Drop expired rows periodically; otherwise keys that are never
+            # re-read (e.g. per-token fingerprints) accumulate forever.
+            if now >= self._next_purge:
+                self._conn.execute("DELETE FROM cache WHERE expires_at <= ?", (now,))
+                self._next_purge = now + self._purge_interval
             self._conn.commit()
 
     def lock_for(self, key: str) -> threading.Lock:
