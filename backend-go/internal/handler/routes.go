@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -351,7 +352,9 @@ func fromCache[T any](c *cache.Cache, ctx context.Context, key string, fetch fun
 			return nil, err
 		}
 		if p, ok := any(result).(partialResult); !ok || !p.IsPartial() {
-			_ = c.Set(key, result)
+			if err := c.Set(key, result); err != nil {
+				log.Printf("cache set failed: %v", err)
+			}
 		}
 		return result, nil
 	})
