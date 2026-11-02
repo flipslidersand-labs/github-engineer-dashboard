@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func newTestCache(t *testing.T, ttlSeconds int) *Cache {
@@ -112,4 +113,28 @@ func TestConcurrentGetSet(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+func TestSetPurgesExpiredRows(t *testing.T) {
+	c := newTestCache(t, 100)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	for _, k := range []string{"a", "b", "c"} {
+		if err := c.Set(k, 1); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+	now = now.Add(time.Hour) // past TTL and past the purge interval
+	if err := c.Set("new", 2); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	var n int
+	if err := c.db.QueryRow("SELECT COUNT(*) FROM cache").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("rows = %d, want 1 (expired rows should be purged)", n)
+	}
 }
