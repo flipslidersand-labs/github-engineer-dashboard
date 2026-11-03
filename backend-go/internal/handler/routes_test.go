@@ -80,6 +80,45 @@ func TestRateLimitWithToken(t *testing.T) {
 	}
 }
 
+// TestRateLimitForbiddenWithExhaustedHeaderBecomes429 verifies a 403 IS
+// remapped to 429 when GitHub signals real rate-limit exhaustion via
+// X-RateLimit-Remaining: 0.
+func TestRateLimitForbiddenWithExhaustedHeaderBecomes429(t *testing.T) {
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limit exceeded"})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limit", nil)
+	req.Header.Set("X-GitHub-Token", "abc")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRateLimitForbiddenWithoutRateLimitHeaderStays403 verifies a permissions
+// / SAML-enforcement 403 (no rate-limit signal in the headers) is NOT
+// remapped to 429.
+func TestRateLimitForbiddenWithoutRateLimitHeaderStays403(t *testing.T) {
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Resource not accessible by integration"})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limit", nil)
+	req.Header.Set("X-GitHub-Token", "abc")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestUserActivityRejectsInvalidUsername covers Issue #151: this route took
 // chi.URLParam("username") straight to the GitHub API without going through
 // isValidOwner, unlike parseGitHubURL's routes.
@@ -268,10 +307,11 @@ func TestSummaryCachesSecondRequest(t *testing.T) {
 }
 
 // TestWriteGitHubErrorMaps403To429 verifies writeGitHubError remaps GitHub's
-// 403 (used for both permission errors and secondary rate limiting) to 429
-// so clients can distinguish rate limiting from a hard permission failure.
+// 403 to 429 when the response signals real rate-limit exhaustion, so clients
+// can distinguish rate limiting from a hard permission failure.
 func TestWriteGitHubErrorMaps403To429(t *testing.T) {
 	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
 	})

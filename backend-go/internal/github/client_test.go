@@ -62,6 +62,46 @@ func TestGetRateLimitReturnsErrorOnNon2xx(t *testing.T) {
 	}
 }
 
+func TestErrorCarriesRateLimitHeaders(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limit exceeded"})
+	})
+
+	_, err := client.GetRateLimit(context.Background())
+	ghErr, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("expected *Error, got %T", err)
+	}
+	if got := ghErr.Headers.Get("X-RateLimit-Remaining"); got != "0" {
+		t.Errorf("X-RateLimit-Remaining = %q, want 0", got)
+	}
+	if got := ghErr.Headers.Get("Retry-After"); got != "30" {
+		t.Errorf("Retry-After = %q, want 30", got)
+	}
+	if !ghErr.RateLimitExhausted() {
+		t.Error("RateLimitExhausted() = false, want true")
+	}
+}
+
+func TestErrorRateLimitExhaustedFalseWithoutHeaders(t *testing.T) {
+	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Resource not accessible by integration"})
+	})
+
+	_, err := client.GetRateLimit(context.Background())
+	ghErr, ok := err.(*Error)
+	if !ok {
+		t.Fatalf("expected *Error, got %T", err)
+	}
+	if ghErr.RateLimitExhausted() {
+		t.Error("RateLimitExhausted() = true, want false")
+	}
+}
+
 func TestGetUserActivityAggregatesEvents(t *testing.T) {
 	client, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

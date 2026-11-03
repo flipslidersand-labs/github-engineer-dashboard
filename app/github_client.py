@@ -15,10 +15,20 @@ logger = logging.getLogger(__name__)
 class GitHubError(Exception):
     """Raised when the GitHub API returns a non-success status."""
 
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        headers: httpx.Headers | None = None,
+    ) -> None:
         super().__init__(f"GitHub API error {status_code}: {message}")
         self.status_code = status_code
         self.message = message
+        # GitHub's rate-limit signal lives in response headers, not the status
+        # code alone: a 403 can be "rate limit exhausted" (X-RateLimit-Remaining:
+        # 0 / Retry-After present) or an unrelated permissions/SAML-enforcement
+        # error. Keep the headers so callers can tell the two apart.
+        self.headers = headers if headers is not None else httpx.Headers()
 
 
 class GitHubClient:
@@ -54,7 +64,7 @@ class GitHubClient:
     def _get(self, path: str) -> httpx.Response:
         resp = self._client.get(f"{self._base_url}{path}", headers=self._headers)
         if resp.status_code >= 400:
-            raise GitHubError(resp.status_code, self._error_message(resp))
+            raise GitHubError(resp.status_code, self._error_message(resp), resp.headers)
         return resp
 
     @staticmethod
@@ -353,7 +363,7 @@ class GitHubClient:
         with self._client.stream("GET", url, headers=headers) as resp:
             if resp.status_code >= 400:
                 resp.read()
-                raise GitHubError(resp.status_code, self._error_message(resp))
+                raise GitHubError(resp.status_code, self._error_message(resp), resp.headers)
             for chunk in resp.iter_bytes():
                 remaining = max_bytes - total
                 if len(chunk) > remaining:
