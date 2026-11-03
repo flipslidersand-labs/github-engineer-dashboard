@@ -106,3 +106,12 @@ func TestCorsMiddlewareNoOriginHeaderSetsNoCORSHeaders(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 }
+
+func TestEnvBool(t *testing.T) {
+	for v, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true, " TRUE ": true, "yes": true, "on": true} {
+		t.Setenv("X_TEST_BOOL", v)
+		if got := envBool("X_TEST_BOOL"); got != want {
+			t.Errorf("envBool(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
