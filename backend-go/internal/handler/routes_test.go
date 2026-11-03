@@ -80,6 +80,45 @@ func TestRateLimitWithToken(t *testing.T) {
 	}
 }
 
+// TestRateLimitForbiddenWithExhaustedHeaderBecomes429 verifies a 403 IS
+// remapped to 429 when GitHub signals real rate-limit exhaustion via
+// X-RateLimit-Remaining: 0.
+func TestRateLimitForbiddenWithExhaustedHeaderBecomes429(t *testing.T) {
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limit exceeded"})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limit", nil)
+	req.Header.Set("X-GitHub-Token", "abc")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRateLimitForbiddenWithoutRateLimitHeaderStays403 verifies a permissions
+// / SAML-enforcement 403 (no rate-limit signal in the headers) is NOT
+// remapped to 429.
+func TestRateLimitForbiddenWithoutRateLimitHeaderStays403(t *testing.T) {
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Resource not accessible by integration"})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rate-limit", nil)
+	req.Header.Set("X-GitHub-Token", "abc")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestUserActivityRejectsInvalidUsername covers Issue #151: this route took
 // chi.URLParam("username") straight to the GitHub API without going through
 // isValidOwner, unlike parseGitHubURL's routes.
@@ -268,10 +307,11 @@ func TestSummaryCachesSecondRequest(t *testing.T) {
 }
 
 // TestWriteGitHubErrorMaps403To429 verifies writeGitHubError remaps GitHub's
-// 403 (used for both permission errors and secondary rate limiting) to 429
-// so clients can distinguish rate limiting from a hard permission failure.
+// 403 to 429 when the response signals real rate-limit exhaustion, so clients
+// can distinguish rate limiting from a hard permission failure.
 func TestWriteGitHubErrorMaps403To429(t *testing.T) {
 	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
 	})
@@ -339,5 +379,53 @@ func TestAnalyzeCachesSecondRequest(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("upstream /users/octocat called %d times, want 1 (second request should hit cache)", calls)
+	}
+}
+
+// TestAnalyzeDoesNotCachePartialUserActivity verifies Issue #153: a
+// UserActivity built from a failed repos-pagination sub-fetch is marked
+// partial and must not be cached, so a repeat request re-fetches instead of
+// silently serving the degraded result for the whole cache TTL.
+func TestAnalyzeDoesNotCachePartialUserActivity(t *testing.T) {
+	repoCalls := 0
+	_, r := newTestDeps(t, func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/users/octocat":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"login": "octocat", "public_repos": 1})
+		case "/users/octocat/events/public":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]any{})
+		case "/users/octocat/repos":
+			repoCalls++
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "rate limited"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/analyze?url=https://github.com/octocat", nil)
+		req.Header.Set("X-GitHub-Token", "abc")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, body=%s", i, w.Code, w.Body.String())
+		}
+		var body struct {
+			Data struct {
+				Partial bool `json:"partial"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !body.Data.Partial {
+			t.Errorf("request %d: partial = false, want true", i)
+		}
+	}
+	if repoCalls != 2 {
+		t.Errorf("upstream /users/octocat/repos called %d times, want 2 (partial result must not be cached)", repoCalls)
 	}
 }
