@@ -37,8 +37,14 @@ type UserActivity struct {
 	TotalEvents   int            `json:"total_events"`
 	RepoLanguages map[string]int `json:"repo_languages"`
 	RecentForks   []RecentFork   `json:"recent_forks"`
+	Partial       bool           `json:"partial"`
 	Cached        bool           `json:"cached"`
 }
+
+// IsPartial reports whether this result was built from an incomplete set of
+// sub-fetches (e.g. repo pagination failed partway) and should not be cached
+// as-is.
+func (u *UserActivity) IsPartial() bool { return u.Partial }
 
 type Contributor struct {
 	Username      string `json:"username"`
@@ -95,8 +101,13 @@ type PRInfo struct {
 	ChangedFilesDetail []ChangedFile `json:"changed_files_detail"`
 	CreatedAt          string        `json:"created_at"`
 	MergedAt           *string       `json:"merged_at"`
+	Partial            bool          `json:"partial"`
 	Cached             bool          `json:"cached"`
 }
+
+// IsPartial reports whether this result was built from an incomplete set of
+// sub-fetches and should not be cached as-is.
+func (p *PRInfo) IsPartial() bool { return p.Partial }
 
 type IssueInfo struct {
 	Number     int      `json:"number"`
@@ -109,8 +120,13 @@ type IssueInfo struct {
 	RelatedPRs []int    `json:"related_prs"`
 	CreatedAt  string   `json:"created_at"`
 	ClosedAt   *string  `json:"closed_at"`
+	Partial    bool     `json:"partial"`
 	Cached     bool     `json:"cached"`
 }
+
+// IsPartial reports whether this result was built from an incomplete set of
+// sub-fetches and should not be cached as-is.
+func (i *IssueInfo) IsPartial() bool { return i.Partial }
 
 type ReviewResult struct {
 	URL      string `json:"url"`
