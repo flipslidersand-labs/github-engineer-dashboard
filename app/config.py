@@ -18,6 +18,10 @@ class Settings:
     ollama_base_url: str | None
     ollama_model: str
     go_backend_url: str | None  # e.g. http://localhost:8080
+    # Issue #158: when true, X-GitHub-Token is mandatory (no GITHUB_TOKEN fallback).
+    require_client_token: bool = False
+    # Max /api/review calls per client IP per minute (0 disables). Paid LLM guard.
+    review_rate_limit_per_min: int = 10
 
     @staticmethod
     def from_env() -> Settings:
@@ -35,5 +39,8 @@ class Settings:
             go_backend_url=(os.environ.get("GO_BACKEND_URL", "").rstrip("/") or None),
             cache_db=os.environ.get("CACHE_DB", "cache.db"),
             cache_ttl_seconds=int(os.environ.get("CACHE_TTL_SECONDS", "300")),
+            require_client_token=os.environ.get("REQUIRE_CLIENT_TOKEN", "").strip().lower()
+            in ("1", "true", "yes", "on"),
+            review_rate_limit_per_min=int(os.environ.get("REVIEW_RATE_LIMIT_PER_MIN", "10")),
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
         )
