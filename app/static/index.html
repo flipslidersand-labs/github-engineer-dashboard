@@ -156,6 +156,14 @@
 </div>
 
 <div class="card">
+  <div class="row">
+    <input type="password" id="tokenInput" autocomplete="off" spellcheck="false"
+      placeholder="GitHub token (optional / REQUIRE_CLIENT_TOKEN 時は必須)" oninput="setClientToken(this.value)">
+  </div>
+  <div class="hint">空ならサーバートークンを使用。入力は X-GitHub-Token ヘッダでのみ送信し、このタブの sessionStorage にだけ保持（タブを閉じると消える）。</div>
+</div>
+
+<div class="card">
   <div style="display:flex;gap:8px;margin-bottom:10px;">
     <button onclick="setMode('analyze')" id="tab-analyze" style="background:#238636;">Analyze</button>
     <button onclick="setMode('summary')" id="tab-summary" style="background:#21262d;">Summary</button>
@@ -215,6 +223,24 @@ let goBackendUrl = null;
 // Tracks the most recent in-flight fetch so setBackend() can abort it when the
 // user switches backends before a slow response comes back (Issue #165).
 let currentController = null;
+// Client-supplied GitHub token (Issue #158). Kept in sessionStorage only (never
+// localStorage), sent solely as the X-GitHub-Token header, never rendered/logged.
+const TOKEN_KEY = 'ghToken';
+function getClientToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
+}
+function setClientToken(v) {
+  v = (v || '').trim();
+  try { v ? sessionStorage.setItem(TOKEN_KEY, v) : sessionStorage.removeItem(TOKEN_KEY); } catch {}
+}
+function apiFetch(url, opts = {}) {
+  const t = getClientToken();
+  if (!t) return fetch(url, opts);
+  return fetch(url, { ...opts, headers: { ...(opts.headers || {}), 'X-GitHub-Token': t } });
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('tokenInput').value = getClientToken();
+});
 const LANG_COLORS = {
   JavaScript:'#f1e05a',TypeScript:'#3178c6',Python:'#3572A5',Go:'#00ADD8',
   Rust:'#dea584',C:'#555555','C++':'#f34b7d','C#':'#178600',Java:'#b07219',
@@ -266,7 +292,7 @@ async function fetchAnalyze() {
   const controller = new AbortController();
   currentController = controller;
   try {
-    const res = await fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+    const res = await apiFetch(`${apiBase}/api/analyze?url=${encodeURIComponent(url)}`, { signal: controller.signal });
     if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const result = await res.json();
     const fn = { user: renderUser, repo: renderRepo, pr: renderPR, issue: renderIssue }[result.type];
@@ -425,7 +451,7 @@ async function fetchReview() {
   btn.textContent = '⏳ Reviewing…';
   sec.innerHTML = '';
   try {
-    const res = await fetch(`/api/review?url=${encodeURIComponent(url)}`);
+    const res = await apiFetch(`/api/review?url=${encodeURIComponent(url)}`);
     if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const r = await res.json();
     const cached = r.cached ? '<span class="badge cached">cached</span>' : '<span class="badge">live</span>';
@@ -470,7 +496,7 @@ async function fetchBenchmark() {
   const controller = new AbortController();
   currentController = controller;
   try {
-    const res = await fetch(`/api/benchmark?url=${encodeURIComponent(url)}`, { signal: controller.signal });
+    const res = await apiFetch(`/api/benchmark?url=${encodeURIComponent(url)}`, { signal: controller.signal });
     if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     const d = await res.json();
     _benchHistory.unshift(d);
@@ -587,7 +613,7 @@ async function fetchSummary() {
   const controller = new AbortController();
   currentController = controller;
   try {
-    const res = await fetch(`${apiBase}/api/summary?url=${encodeURIComponent(url)}&exclude_forks=${excludeForks}`, { signal: controller.signal });
+    const res = await apiFetch(`${apiBase}/api/summary?url=${encodeURIComponent(url)}&exclude_forks=${excludeForks}`, { signal: controller.signal });
     if (!res.ok) { throw new Error(await parseErrorBody(res)); }
     renderSummary(await res.json());
   } catch(e) {
@@ -634,9 +660,9 @@ async function fetchCompare() {
   currentController = controller;
   try {
     const [rA, rB] = await Promise.all([
-      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlA)}`, { signal: controller.signal })
+      apiFetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlA)}`, { signal: controller.signal })
         .then(async r => { if(!r.ok) throw new Error(`${urlA}: ${await parseErrorBody(r)}`); return r.json(); }),
-      fetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlB)}`, { signal: controller.signal })
+      apiFetch(`${apiBase}/api/analyze?url=${encodeURIComponent(urlB)}`, { signal: controller.signal })
         .then(async r => { if(!r.ok) throw new Error(`${urlB}: ${await parseErrorBody(r)}`); return r.json(); }),
     ]);
     if (rA.type !== rB.type) {
