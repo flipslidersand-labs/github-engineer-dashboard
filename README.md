@@ -155,3 +155,8 @@ docs/
 tests/              pytest suite (54 tests) / pytest スイート（54 tests）
 render.yaml         Render Blueprint (Python + Go services) / Render Blueprint（Python + Go 両サービス）
 ```
+
+
+## 設計判断 / Architecture decisions
+
+[ADR 一覧](docs/adr/README.md) — 設計判断、根拠資料、未決定事項。
