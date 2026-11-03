@@ -13,11 +13,17 @@ import (
 
 const defaultTTL = 300 // 5 minutes
 
+// purgeInterval bounds how often Set sweeps expired rows.
+const purgeInterval = time.Minute
+
 // Cache is a thread-safe SQLite-backed TTL store.
 type Cache struct {
 	db  *sql.DB
 	ttl time.Duration
 	mu  sync.Mutex
+
+	now       func() time.Time
+	nextPurge time.Time
 }
 
 // New opens (or creates) a SQLite database at path and returns a ready Cache.
@@ -38,12 +44,14 @@ func New(path string, ttlSeconds int) (*Cache, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Cache{db: db, ttl: time.Duration(ttlSeconds) * time.Second}, nil
+	c := &Cache{db: db, ttl: time.Duration(ttlSeconds) * time.Second, now: time.Now}
+	c.nextPurge = c.now().Add(purgeInterval)
+	return c, nil
 }
 
 // Get returns the cached value unmarshalled into dst, or false if missing/expired.
 func (c *Cache) Get(key string, dst any) bool {
-	now := float64(time.Now().UnixNano()) / 1e9
+	now := float64(c.now().UnixNano()) / 1e9
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -68,7 +76,8 @@ func (c *Cache) Set(key string, value any) error {
 	if err != nil {
 		return err
 	}
-	expiresAt := float64(time.Now().Add(c.ttl).UnixNano()) / 1e9
+	t := c.now()
+	expiresAt := float64(t.Add(c.ttl).UnixNano()) / 1e9
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -78,7 +87,15 @@ func (c *Cache) Set(key string, value any) error {
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
 		key, string(payload), expiresAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Sweep expired rows periodically so never-re-read keys don't pile up.
+	if !t.Before(c.nextPurge) {
+		_, _ = c.db.Exec("DELETE FROM cache WHERE expires_at <= ?", float64(t.UnixNano())/1e9)
+		c.nextPurge = t.Add(purgeInterval)
+	}
+	return nil
 }
 
 // Close closes the underlying database.
