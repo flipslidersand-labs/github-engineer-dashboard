@@ -29,6 +29,9 @@ type Deps struct {
 	Cache        *cache.Cache
 	GithubToken  string
 	GithubAPIURL string
+	// RequireClientToken disables the GithubToken fallback: requests without
+	// X-GitHub-Token get 401 (Issue #158; mirrors Python REQUIRE_CLIENT_TOKEN).
+	RequireClientToken bool
 	// HTTPClient is shared across all requests so GitHub API calls reuse
 	// pooled connections instead of a fresh TCP/TLS handshake per request.
 	// Falls back to gh.New's own client if left nil (e.g. in older tests).
@@ -49,7 +52,7 @@ func Register(r chi.Router, d *Deps) {
 func (d *Deps) requireToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-GitHub-Token")
-		if token == "" {
+		if token == "" && !d.RequireClientToken {
 			token = d.GithubToken
 		}
 		if token == "" {
@@ -66,7 +69,7 @@ func (d *Deps) requireToken(next http.HandlerFunc) http.HandlerFunc {
 
 func newClient(r *http.Request, d *Deps) *gh.Client {
 	token := r.Header.Get("X-GitHub-Token")
-	if token == "" {
+	if token == "" && !d.RequireClientToken {
 		token = d.GithubToken
 	}
 	if d.HTTPClient != nil {
