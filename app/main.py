@@ -18,6 +18,8 @@ import contextvars
 import logging
 import os
 import pathlib
+import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
@@ -187,13 +189,43 @@ def require_token(
     x_github_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
 ) -> str:
-    token = x_github_token or settings.github_token
+    token = x_github_token or (None if settings.require_client_token else settings.github_token)
     if not token:
         raise HTTPException(
             status_code=401,
             detail="GitHub token required. Provide the 'X-GitHub-Token' header.",
         )
     return token
+
+
+_REVIEW_LOCK = threading.Lock()
+
+
+def review_rate_limit(request: Request, settings: Settings = Depends(get_settings)) -> None:
+    """Per-client-IP sliding window (60s) for the paid-LLM /api/review route.
+
+    Keyed on the socket peer address; X-Forwarded-For is deliberately not trusted
+    (spoofable). Behind a reverse proxy all clients share the proxy's bucket.
+    """
+    limit = settings.review_rate_limit_per_min
+    if limit <= 0:
+        return
+    now = time.monotonic()
+    ip = request.client.host if request.client else "unknown"
+    with _REVIEW_LOCK:
+        hits = request.app.state.__dict__.setdefault("review_hits", {})
+        for k in [k for k, v in hits.items() if not v or now - v[-1] >= 60]:
+            del hits[k]  # bound memory: drop idle IPs
+        recent = [t for t in hits.get(ip, []) if now - t < 60]
+        if len(recent) >= limit:
+            retry = max(1, int(60 - (now - recent[0])) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="AI review rate limit exceeded. Try again later.",
+                headers={"Retry-After": str(retry)},
+            )
+        recent.append(now)
+        hits[ip] = recent
 
 
 def get_client(
@@ -368,7 +400,12 @@ def _register_routes(app: FastAPI) -> None:
             detail="Unsupported URL. Provide a GitHub user, repository, PR, or issue URL.",
         )
 
-    @app.get("/api/review", response_model=ReviewResult, tags=["github"])
+    @app.get(
+        "/api/review",
+        response_model=ReviewResult,
+        tags=["github"],
+        dependencies=[Depends(review_rate_limit)],
+    )
     def ai_review(
         url: str,
         client: GitHubClient = Depends(get_client),
