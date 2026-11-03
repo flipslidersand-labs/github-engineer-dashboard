@@ -20,9 +20,23 @@ import (
 )
 
 const (
-	defaultBaseURL  = "https://api.github.com"
-	reposPageSize   = 100
-	reposMaxPages   = 10
+	defaultBaseURL = "https://api.github.com"
+	reposPageSize  = 100
+	reposMaxPages  = 10
+
+	// maxResponseBodyBytes caps how much of a general JSON API response body
+	// we'll read. GitHub JSON payloads (repo/PR/issue objects, review lists,
+	// etc.) are normally well under this; a pathological or misbehaving
+	// upstream response hitting the cap is treated as an error rather than
+	// truncated-and-parsed, since truncated JSON can't be unmarshaled anyway.
+	maxResponseBodyBytes = 10 * 1024 * 1024 // 10MB
+
+	// maxDiffBodyBytes caps GetPRDiff's raw (non-JSON) diff text. Kept in
+	// line with the equivalent Python fix (get_pr_diff's max_bytes, #126),
+	// which truncates at 200KB. Go's client currently returns an error at
+	// the cap rather than truncating; per-endpoint truncation semantics are
+	// a possible follow-up if a truncated-but-usable diff is ever needed.
+	maxDiffBodyBytes = 200 * 1024 // 200KB
 )
 
 // Error is returned when GitHub responds with a non-2xx status.
@@ -92,10 +106,15 @@ func NewWithClient(token, baseURL string, httpClient *http.Client) *Client {
 
 // get issues a GET request and returns the response body, or a *Error.
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
-	return c.getWithAccept(ctx, path, "application/vnd.github+json")
+	return c.getWithAccept(ctx, path, "application/vnd.github+json", maxResponseBodyBytes)
 }
 
-func (c *Client) getWithAccept(ctx context.Context, path, accept string) ([]byte, error) {
+// getWithAccept issues a GET request and returns the response body, capped
+// at maxBytes. The body is read with an io.LimitReader set to maxBytes+1 so
+// we can tell a body that's exactly at the limit apart from one that
+// overflows it; if the read body exceeds maxBytes, that's reported as an
+// error instead of being silently truncated and returned.
+func (c *Client) getWithAccept(ctx context.Context, path, accept string, maxBytes int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
@@ -110,9 +129,12 @@ func (c *Client) getWithAccept(ctx context.Context, path, accept string) ([]byte
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("github: response body for %s exceeds %d byte limit", path, maxBytes)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -283,14 +305,16 @@ func (c *Client) GetUserActivity(ctx context.Context, username string) (*model.U
 // GetRepo returns structured data for a repository.
 func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.RepoInfo, error) {
 	type ghRepo struct {
-		Owner           struct{ Login string `json:"login"` } `json:"owner"`
-		Name            string   `json:"name"`
-		FullName        string   `json:"full_name"`
-		Description     *string  `json:"description"`
-		StargazersCount int      `json:"stargazers_count"`
-		ForksCount      int      `json:"forks_count"`
-		OpenIssuesCount int      `json:"open_issues_count"`
-		Language        *string  `json:"language"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name            string  `json:"name"`
+		FullName        string  `json:"full_name"`
+		Description     *string `json:"description"`
+		StargazersCount int     `json:"stargazers_count"`
+		ForksCount      int     `json:"forks_count"`
+		OpenIssuesCount int     `json:"open_issues_count"`
+		Language        *string `json:"language"`
 		License         *struct {
 			SPDXID string `json:"spdx_id"`
 			Name   string `json:"name"`
@@ -422,22 +446,30 @@ func (c *Client) GetRepo(ctx context.Context, username, repo string) (*model.Rep
 // GetPR returns structured data for a pull request.
 func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (*model.PRInfo, error) {
 	type ghPR struct {
-		Number        int     `json:"number"`
-		Title         string  `json:"title"`
-		State         string  `json:"state"`
-		User          struct{ Login string `json:"login"` } `json:"user"`
-		Base          struct{ Ref string `json:"ref"` } `json:"base"`
-		Head          struct{ Ref string `json:"ref"` } `json:"head"`
-		Additions     int     `json:"additions"`
-		Deletions     int     `json:"deletions"`
-		ChangedFiles  int     `json:"changed_files"`
-		Comments      int     `json:"comments"`
-		ReviewComments int    `json:"review_comments"`
-		CreatedAt     string  `json:"created_at"`
-		MergedAt      *string `json:"merged_at"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Head struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+		Additions      int     `json:"additions"`
+		Deletions      int     `json:"deletions"`
+		ChangedFiles   int     `json:"changed_files"`
+		Comments       int     `json:"comments"`
+		ReviewComments int     `json:"review_comments"`
+		CreatedAt      string  `json:"created_at"`
+		MergedAt       *string `json:"merged_at"`
 	}
 	type ghReview struct {
-		User        struct{ Login string `json:"login"` } `json:"user"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 		SubmittedAt string `json:"submitted_at"`
 	}
 	type ghFile struct {
@@ -539,7 +571,7 @@ func (c *Client) GetPR(ctx context.Context, username, repo string, number int) (
 // GetPRDiff returns the raw unified diff for a pull request.
 func (c *Client) GetPRDiff(ctx context.Context, username, repo string, number int) (string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", username, repo, number)
-	data, err := c.getWithAccept(ctx, path, "application/vnd.github.v3.diff")
+	data, err := c.getWithAccept(ctx, path, "application/vnd.github.v3.diff", maxDiffBodyBytes)
 	if err != nil {
 		return "", err
 	}
@@ -549,12 +581,18 @@ func (c *Client) GetPRDiff(ctx context.Context, username, repo string, number in
 // GetIssue returns structured data for an issue.
 func (c *Client) GetIssue(ctx context.Context, username, repo string, number int) (*model.IssueInfo, error) {
 	type ghIssue struct {
-		Number    int     `json:"number"`
-		Title     string  `json:"title"`
-		State     string  `json:"state"`
-		User      struct{ Login string `json:"login"` } `json:"user"`
-		Labels    []struct{ Name string `json:"name"` } `json:"labels"`
-		Assignees []struct{ Login string `json:"login"` } `json:"assignees"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+		User   struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Assignees []struct {
+			Login string `json:"login"`
+		} `json:"assignees"`
 		Comments  int     `json:"comments"`
 		CreatedAt string  `json:"created_at"`
 		ClosedAt  *string `json:"closed_at"`
