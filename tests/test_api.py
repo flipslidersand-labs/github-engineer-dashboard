@@ -16,10 +16,12 @@ def _settings(
     anthropic_key: str | None = None,
     ollama_url: str | None = None,
     ollama_model: str = "qwen2.5-coder:7b",
+    github_token: str | None = None,
+    **extra,
 ) -> Settings:
     return Settings(
         github_api_url="https://api.github.com",
-        github_token=None,
+        github_token=github_token,
         anthropic_api_key=anthropic_key,
         ollama_base_url=ollama_url,
         ollama_model=ollama_model,
@@ -27,6 +29,7 @@ def _settings(
         cache_db=str(tmp_path / "cache.db"),
         cache_ttl_seconds=300,
         cors_origins=("*",),
+        **extra,
     )
 
 
@@ -957,3 +960,64 @@ def test_403_with_nonzero_remaining_stays_403(tmp_path):
     c = _forbidden_client(tmp_path, {"X-RateLimit-Remaining": "10"})
     r = c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"})
     assert r.status_code == 403
+
+
+# ── REQUIRE_CLIENT_TOKEN / review rate limit (Issue #158) ─────────────────────
+
+_REVIEW_URL = "/api/review?url=https://github.com/torvalds/linux/pull/1"
+
+
+def test_server_token_fallback_is_default(tmp_path):
+    settings = _settings(tmp_path, github_token="server-token")
+    assert require_token(None, settings) == "server-token"
+
+
+def test_require_client_token_disables_fallback(tmp_path):
+    app = create_app(_settings(tmp_path, github_token="server-token", require_client_token=True))
+    with TestClient(app) as c:
+        assert c.get("/api/rate-limit").status_code == 401
+        assert c.get(_REVIEW_URL).status_code == 401
+
+
+def test_require_client_token_accepts_header(tmp_path):
+    app = create_app(_settings(tmp_path, github_token="server-token", require_client_token=True))
+
+    def override_client(_token: str = Depends(require_token)):
+        gh = _mock_github({}, token=_token)
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    with TestClient(app) as c:
+        assert c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"}).status_code == 200
+
+
+def test_review_rate_limited_per_ip(tmp_path):
+    app = create_app(_settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=2))
+
+    def override_client(_token: str = Depends(require_token)):
+        gh = _mock_github({}, token=_token)
+        try:
+            yield gh
+        finally:
+            gh.close()
+
+    app.dependency_overrides[get_client] = override_client
+    h = {"X-GitHub-Token": "abc"}
+    with TestClient(app) as c, patch("app.main.review_diff", return_value="## Verdict\nok"):
+        assert c.get(_REVIEW_URL, headers=h).status_code == 200
+        assert c.get(_REVIEW_URL, headers=h).status_code == 200
+        r = c.get(_REVIEW_URL, headers=h)
+        assert r.status_code == 429
+        assert "Retry-After" in r.headers
+        # other endpoints are not limited
+        assert c.get("/api/rate-limit", headers=h).status_code == 200
+
+
+def test_review_rate_limit_zero_disables(tmp_path):
+    app = create_app(_settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=0))
+    with TestClient(app) as c:
+        for _ in range(3):
+            assert c.get(_REVIEW_URL).status_code != 429
