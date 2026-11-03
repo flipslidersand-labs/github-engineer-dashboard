@@ -31,9 +31,11 @@ func main() {
 	defer c.Close()
 
 	deps := &handler.Deps{
-		Cache:        c,
-		GithubToken:  os.Getenv("GITHUB_TOKEN"),
-		GithubAPIURL: getenv("GITHUB_API_URL", "https://api.github.com"),
+		Cache:       c,
+		GithubToken: os.Getenv("GITHUB_TOKEN"),
+		// Issue #158: when set, X-GitHub-Token is mandatory (no GITHUB_TOKEN fallback).
+		RequireClientToken: envBool("REQUIRE_CLIENT_TOKEN"),
+		GithubAPIURL:       getenv("GITHUB_API_URL", "https://api.github.com"),
 		// Shared across requests so GitHub API calls reuse pooled connections
 		// instead of a fresh TCP/TLS handshake per request (Issue #128).
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
@@ -83,6 +85,15 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool mirrors the Python backend: 1/true/yes/on (case-insensitive) are true.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func getenvi(key string, fallback int) int {
