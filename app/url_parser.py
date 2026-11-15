@@ -79,7 +79,11 @@ def parse_github_url(raw: str) -> ParsedGitHubUrl:
 
     if len(parts) >= 4:
         owner, repo, section, number = parts[0], parts[1], parts[2], parts[3]
-        if is_valid_owner(owner) and is_valid_repo(repo) and section in ("pull", "issues"):
+        if (
+            is_valid_owner(owner)
+            and is_valid_repo(repo)
+            and section in ("pull", "issues")
+        ):
             if _NUMBER_RE.fullmatch(number):
                 url_type = UrlType.PR if section == "pull" else UrlType.ISSUE
                 return ParsedGitHubUrl(

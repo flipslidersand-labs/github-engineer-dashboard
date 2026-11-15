@@ -31,7 +31,9 @@ class Settings:
         # explicitly via CORS_ORIGINS.
         origins = os.environ.get("CORS_ORIGINS", "")
         return Settings(
-            github_api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
+            github_api_url=os.environ.get(
+                "GITHUB_API_URL", "https://api.github.com"
+            ).rstrip("/"),
             github_token=(os.environ.get("GITHUB_TOKEN") or None),
             anthropic_api_key=(os.environ.get("ANTHROPIC_API_KEY") or None),
             ollama_base_url=(os.environ.get("OLLAMA_BASE_URL") or None),
@@ -39,8 +41,12 @@ class Settings:
             go_backend_url=(os.environ.get("GO_BACKEND_URL", "").rstrip("/") or None),
             cache_db=os.environ.get("CACHE_DB", "cache.db"),
             cache_ttl_seconds=int(os.environ.get("CACHE_TTL_SECONDS", "300")),
-            require_client_token=os.environ.get("REQUIRE_CLIENT_TOKEN", "").strip().lower()
+            require_client_token=os.environ.get("REQUIRE_CLIENT_TOKEN", "")
+            .strip()
+            .lower()
             in ("1", "true", "yes", "on"),
-            review_rate_limit_per_min=int(os.environ.get("REVIEW_RATE_LIMIT_PER_MIN", "10")),
+            review_rate_limit_per_min=int(
+                os.environ.get("REVIEW_RATE_LIMIT_PER_MIN", "10")
+            ),
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
         )

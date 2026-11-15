@@ -7,7 +7,9 @@ from app.reviewer import review_diff_ollama
 
 
 def _resp(**kwargs) -> httpx.Response:
-    return httpx.Response(200, request=httpx.Request("POST", "http://x/api/chat"), **kwargs)
+    return httpx.Response(
+        200, request=httpx.Request("POST", "http://x/api/chat"), **kwargs
+    )
 
 
 def test_review_diff_ollama_non_json_body_raises_runtime_error():
@@ -44,5 +46,7 @@ def test_review_diff_ollama_read_error_raises_runtime_error():
 def test_review_diff_ollama_success():
     resp = _resp(json={"message": {"content": "## Summary\nLGTM"}})
     with patch("app.reviewer.httpx.post", return_value=resp):
-        result = review_diff_ollama("diff", "http://localhost:11434", "qwen2.5-coder:7b")
+        result = review_diff_ollama(
+            "diff", "http://localhost:11434", "qwen2.5-coder:7b"
+        )
     assert result == "## Summary\nLGTM"
