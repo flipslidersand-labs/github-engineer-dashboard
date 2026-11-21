@@ -18,8 +18,6 @@ jobs:
     with:
       go-version: "1.26"
       working-directory: "backend-go"
-      # First real threshold now that internal/{cache,github,handler} have
-      # tests (Issue #127; measured ~45%). model/ is plain structs with no
-      # logic, so it's excluded from the denominator naturally (no test file
-      # needed). Raise this incrementally as coverage grows.
-      coverage-threshold: 40
+      # Measured total 75.4% (2026-11-03, after #173). Threshold sits ~5pt
+      # below so regressions are caught without flaking. Raise as coverage grows.
+      coverage-threshold: 70
