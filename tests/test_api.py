@@ -69,7 +69,10 @@ def _mock_github(counter: dict, token: str = "test-token") -> GitHubClient:
             )
         if path == "/users/octocat/events/public":
             return httpx.Response(200, json=[{"type": "PushEvent"}])
-        if path == "/repos/torvalds/linux/pulls" and request.url.params.get("state") == "open":
+        if (
+            path == "/repos/torvalds/linux/pulls"
+            and request.url.params.get("state") == "open"
+        ):
             return httpx.Response(200, json=[{"number": 1}, {"number": 2}])
         if path == "/repos/torvalds/linux/pulls/1/files":
             return httpx.Response(
@@ -89,7 +92,9 @@ def _mock_github(counter: dict, token: str = "test-token") -> GitHubClient:
                 json=[
                     {
                         "event": "cross-referenced",
-                        "source": {"issue": {"number": 99, "pull_request": {"url": "..."}}},
+                        "source": {
+                            "issue": {"number": 99, "pull_request": {"url": "..."}}
+                        },
                     },
                 ],
             )
@@ -151,11 +156,15 @@ def _mock_github(counter: dict, token: str = "test-token") -> GitHubClient:
             return httpx.Response(200, json=[])
         if path == "/repos/torvalds/linux/pulls/2/reviews":
             # Reviews exist but none have submitted_at (e.g. PENDING state)
-            return httpx.Response(200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}])
-        if path == "/repos/torvalds/linux/pulls/1" and request.headers.get("accept", "").endswith(
-            ".diff"
-        ):
-            return httpx.Response(200, text="diff --git a/foo.py b/foo.py\n+print('hello')\n")
+            return httpx.Response(
+                200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}]
+            )
+        if path == "/repos/torvalds/linux/pulls/1" and request.headers.get(
+            "accept", ""
+        ).endswith(".diff"):
+            return httpx.Response(
+                200, text="diff --git a/foo.py b/foo.py\n+print('hello')\n"
+            )
         if path == "/repos/torvalds/linux/issues/5":
             return httpx.Response(
                 200,
@@ -388,7 +397,9 @@ def test_analyze_cache_is_scoped_per_token(client):
 
     r2 = client.get(f"/api/analyze?url={url}", headers={"X-GitHub-Token": "token-b"})
     assert r2.json()["data"]["cached"] is False
-    assert client.counter["calls"] > calls_after_first  # a real fetch happened, not a cache hit
+    assert (
+        client.counter["calls"] > calls_after_first
+    )  # a real fetch happened, not a cache hit
 
     # Same token as the first request should still hit its own cache entry.
     r3 = client.get(f"/api/analyze?url={url}", headers={"X-GitHub-Token": "token-a"})
@@ -408,7 +419,9 @@ def test_analyze_requires_token(client):
 
 def test_analyze_pr_url(client):
     h = {"X-GitHub-Token": "abc"}
-    r = client.get("/api/analyze?url=https://github.com/torvalds/linux/pull/1", headers=h)
+    r = client.get(
+        "/api/analyze?url=https://github.com/torvalds/linux/pull/1", headers=h
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["type"] == "pr"
@@ -427,7 +440,9 @@ def test_analyze_pr_non_ascii_digit_number_returns_422(client):
     # Issue #160: "²" (U+00B2) is isdigit() == True but int("²") raises
     # ValueError. This must be a clean 422, not an unhandled 500.
     h = {"X-GitHub-Token": "abc"}
-    r = client.get("/api/analyze?url=https://github.com/torvalds/linux/pull/²", headers=h)
+    r = client.get(
+        "/api/analyze?url=https://github.com/torvalds/linux/pull/²", headers=h
+    )
     assert r.status_code == 422
 
 
@@ -457,7 +472,9 @@ def test_analyze_pr_pending_reviews_no_submitted_at(tmp_path):
                 },
             )
         if path == "/repos/torvalds/linux/pulls/2/reviews":
-            return httpx.Response(200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}])
+            return httpx.Response(
+                200, json=[{"user": {"login": "reviewer"}, "state": "PENDING"}]
+            )
         if path == "/repos/torvalds/linux/pulls/2/files":
             return httpx.Response(200, json=[])
         return httpx.Response(404, json={"message": "not found"})
@@ -470,7 +487,9 @@ def test_analyze_pr_pending_reviews_no_submitted_at(tmp_path):
 
 def test_analyze_issue_url(client):
     h = {"X-GitHub-Token": "abc"}
-    r = client.get("/api/analyze?url=https://github.com/torvalds/linux/issues/5", headers=h)
+    r = client.get(
+        "/api/analyze?url=https://github.com/torvalds/linux/issues/5", headers=h
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["type"] == "issue"
@@ -656,7 +675,9 @@ def test_summary_user_aggregates_all_repos(client):
 
 def test_summary_user_exclude_forks(client):
     h = {"X-GitHub-Token": "abc"}
-    r = client.get("/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h)
+    r = client.get(
+        "/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["repo_count"] == 3  # forked repo "c" dropped
@@ -689,7 +710,9 @@ def test_summary_caching_keyed_by_exclude_forks(client):
     assert client.counter["calls"] == calls_after_first
 
     # Different exclude_forks → distinct cache key, upstream refetched.
-    r3 = client.get("/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h)
+    r3 = client.get(
+        "/api/summary?url=https://github.com/octocat&exclude_forks=true", headers=h
+    )
     assert r3.json()["cached"] is False
     assert client.counter["calls"] > calls_after_first
 
@@ -732,7 +755,9 @@ def test_review_pr_url(review_client):
         "app.main.review_diff",
         return_value="## Summary\nLooks good.\n## Verdict\n✅ **Looks good**",
     ) as mock_rd:
-        r = review_client.get("/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h)
+        r = review_client.get(
+            "/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h
+        )
     assert r.status_code == 200
     body = r.json()
     assert body["pr_number"] == 1
@@ -745,7 +770,9 @@ def test_review_pr_url(review_client):
 def test_review_caching(review_client):
     h = {"X-GitHub-Token": "abc"}
     with patch("app.main.review_diff", return_value="## Summary\nOK.") as mock_rd:
-        review_client.get("/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h)
+        review_client.get(
+            "/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h
+        )
         r2 = review_client.get(
             "/api/review?url=https://github.com/torvalds/linux/pull/1", headers=h
         )
@@ -755,7 +782,9 @@ def test_review_caching(review_client):
 
 def test_review_requires_pr_url(review_client):
     h = {"X-GitHub-Token": "abc"}
-    r = review_client.get("/api/review?url=https://github.com/torvalds/linux", headers=h)
+    r = review_client.get(
+        "/api/review?url=https://github.com/torvalds/linux", headers=h
+    )
     assert r.status_code == 422
 
 
@@ -780,7 +809,9 @@ def test_review_unavailable_without_any_key(tmp_path):
 
 
 def test_review_ollama_fallback(tmp_path):
-    app = create_app(_settings(tmp_path, anthropic_key=None, ollama_url="http://localhost:11434"))
+    app = create_app(
+        _settings(tmp_path, anthropic_key=None, ollama_url="http://localhost:11434")
+    )
     counter: dict = {}
 
     def override_client(_token: str = Depends(require_token)):
@@ -793,7 +824,9 @@ def test_review_ollama_fallback(tmp_path):
     app.dependency_overrides[get_client] = override_client
     with (
         TestClient(app) as c,
-        patch("app.main.review_diff_ollama", return_value="## Summary\nOllama review.") as mock_ol,
+        patch(
+            "app.main.review_diff_ollama", return_value="## Summary\nOllama review."
+        ) as mock_ol,
     ):
         r = c.get(
             "/api/review?url=https://github.com/torvalds/linux/pull/1",
@@ -818,14 +851,19 @@ def test_review_does_not_fetch_reviews_or_files(tmp_path):
         raise AssertionError(f"unexpected request: {path}")
 
     def override_client(_token: str = Depends(require_token)):
-        gh = GitHubClient("abc", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        gh = GitHubClient(
+            "abc", client=httpx.Client(transport=httpx.MockTransport(handler))
+        )
         try:
             yield gh
         finally:
             gh.close()
 
     app.dependency_overrides[get_client] = override_client
-    with TestClient(app) as c, patch("app.main.review_diff", return_value="## Summary\nOK."):
+    with (
+        TestClient(app) as c,
+        patch("app.main.review_diff", return_value="## Summary\nOK."),
+    ):
         r = c.get(
             "/api/review?url=https://github.com/torvalds/linux/pull/1",
             headers={"X-GitHub-Token": "abc"},
@@ -837,7 +875,9 @@ def test_review_does_not_fetch_reviews_or_files(tmp_path):
 
 
 def test_review_ollama_connect_error_returns_502(tmp_path):
-    app = create_app(_settings(tmp_path, anthropic_key=None, ollama_url="http://localhost:11434"))
+    app = create_app(
+        _settings(tmp_path, anthropic_key=None, ollama_url="http://localhost:11434")
+    )
     counter: dict = {}
 
     def override_client(_token: str = Depends(require_token)):
@@ -852,7 +892,9 @@ def test_review_ollama_connect_error_returns_502(tmp_path):
         TestClient(app) as c,
         patch(
             "app.main.review_diff_ollama",
-            side_effect=RuntimeError("Cannot connect to Ollama at http://localhost:11434."),
+            side_effect=RuntimeError(
+                "Cannot connect to Ollama at http://localhost:11434."
+            ),
         ),
     ):
         r = c.get(
@@ -973,14 +1015,18 @@ def test_server_token_fallback_is_default(tmp_path):
 
 
 def test_require_client_token_disables_fallback(tmp_path):
-    app = create_app(_settings(tmp_path, github_token="server-token", require_client_token=True))
+    app = create_app(
+        _settings(tmp_path, github_token="server-token", require_client_token=True)
+    )
     with TestClient(app) as c:
         assert c.get("/api/rate-limit").status_code == 401
         assert c.get(_REVIEW_URL).status_code == 401
 
 
 def test_require_client_token_accepts_header(tmp_path):
-    app = create_app(_settings(tmp_path, github_token="server-token", require_client_token=True))
+    app = create_app(
+        _settings(tmp_path, github_token="server-token", require_client_token=True)
+    )
 
     def override_client(_token: str = Depends(require_token)):
         gh = _mock_github({}, token=_token)
@@ -991,11 +1037,16 @@ def test_require_client_token_accepts_header(tmp_path):
 
     app.dependency_overrides[get_client] = override_client
     with TestClient(app) as c:
-        assert c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"}).status_code == 200
+        assert (
+            c.get("/api/rate-limit", headers={"X-GitHub-Token": "abc"}).status_code
+            == 200
+        )
 
 
 def test_review_rate_limited_per_ip(tmp_path):
-    app = create_app(_settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=2))
+    app = create_app(
+        _settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=2)
+    )
 
     def override_client(_token: str = Depends(require_token)):
         gh = _mock_github({}, token=_token)
@@ -1006,7 +1057,10 @@ def test_review_rate_limited_per_ip(tmp_path):
 
     app.dependency_overrides[get_client] = override_client
     h = {"X-GitHub-Token": "abc"}
-    with TestClient(app) as c, patch("app.main.review_diff", return_value="## Verdict\nok"):
+    with (
+        TestClient(app) as c,
+        patch("app.main.review_diff", return_value="## Verdict\nok"),
+    ):
         assert c.get(_REVIEW_URL, headers=h).status_code == 200
         assert c.get(_REVIEW_URL, headers=h).status_code == 200
         r = c.get(_REVIEW_URL, headers=h)
@@ -1017,7 +1071,9 @@ def test_review_rate_limited_per_ip(tmp_path):
 
 
 def test_review_rate_limit_zero_disables(tmp_path):
-    app = create_app(_settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=0))
+    app = create_app(
+        _settings(tmp_path, anthropic_key="k", review_rate_limit_per_min=0)
+    )
     with TestClient(app) as c:
         for _ in range(3):
             assert c.get(_REVIEW_URL).status_code != 429

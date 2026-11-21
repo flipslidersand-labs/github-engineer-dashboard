@@ -81,7 +81,9 @@ def _configure_logging() -> None:
     attaches a handler the first time.
     """
     root = logging.getLogger()
-    if any(getattr(h, "_gh_dashboard_request_id_handler", False) for h in root.handlers):
+    if any(
+        getattr(h, "_gh_dashboard_request_id_handler", False) for h in root.handlers
+    ):
         return
 
     level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -108,7 +110,10 @@ def _is_rate_limit_exhausted(headers) -> bool:
     """
     if headers is None:
         return False
-    return headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None
+    return (
+        headers.get("X-RateLimit-Remaining") == "0"
+        or headers.get("Retry-After") is not None
+    )
 
 
 @asynccontextmanager
@@ -131,7 +136,9 @@ async def lifespan(app: FastAPI):
 def create_app(settings: Settings | None = None) -> FastAPI:
     _configure_logging()
     settings = settings or Settings.from_env()
-    app = FastAPI(title="github-engineer-dashboard", version=__version__, lifespan=lifespan)
+    app = FastAPI(
+        title="github-engineer-dashboard", version=__version__, lifespan=lifespan
+    )
     app.state.settings = settings
 
     app.add_middleware(
@@ -189,7 +196,9 @@ def require_token(
     x_github_token: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
 ) -> str:
-    token = x_github_token or (None if settings.require_client_token else settings.github_token)
+    token = x_github_token or (
+        None if settings.require_client_token else settings.github_token
+    )
     if not token:
         raise HTTPException(
             status_code=401,
@@ -201,7 +210,9 @@ def require_token(
 _REVIEW_LOCK = threading.Lock()
 
 
-def review_rate_limit(request: Request, settings: Settings = Depends(get_settings)) -> None:
+def review_rate_limit(
+    request: Request, settings: Settings = Depends(get_settings)
+) -> None:
     """Per-client-IP sliding window (60s) for the paid-LLM /api/review route.
 
     Keyed on the socket peer address; X-Forwarded-For is deliberately not trusted
@@ -235,7 +246,9 @@ def get_client(
 ) -> Iterator[GitHubClient]:
     # Reuses the process-wide http_client (see lifespan) for connection
     # pooling; GitHubClient.close() is a no-op when the client is injected.
-    client = GitHubClient(token, settings.github_api_url, client=request.app.state.http_client)
+    client = GitHubClient(
+        token, settings.github_api_url, client=request.app.state.http_client
+    )
     try:
         yield client
     finally:
@@ -327,12 +340,16 @@ def _register_routes(app: FastAPI) -> None:
                 detail="Summary requires a GitHub user or organization URL.",
             )
 
-        key = f"{client.token_fingerprint}:summary:{owner_key}:forks={int(exclude_forks)}"
+        key = (
+            f"{client.token_fingerprint}:summary:{owner_key}:forks={int(exclude_forks)}"
+        )
         if parsed.type == UrlType.USER:
             return _cache_fetch(
                 cache,
                 key,
-                lambda: client.get_user_repos_summary(owner, exclude_forks=exclude_forks),
+                lambda: client.get_user_repos_summary(
+                    owner, exclude_forks=exclude_forks
+                ),
                 CrossRepoSummary,
             )
         return _cache_fetch(
@@ -477,11 +494,13 @@ def _register_routes(app: FastAPI) -> None:
 
             def fetch():
                 return client.get_user_activity(parsed.params["username"])
+
         elif parsed.type == UrlType.REPO:
             typ = "repo"
 
             def fetch():
                 return client.get_repo(parsed.params["username"], parsed.params["repo"])
+
         elif parsed.type == UrlType.PR:
             typ = "pr"
 
@@ -491,6 +510,7 @@ def _register_routes(app: FastAPI) -> None:
                     parsed.params["repo"],
                     int(parsed.params["number"]),
                 )
+
         elif parsed.type == UrlType.ISSUE:
             typ = "issue"
 
@@ -500,8 +520,11 @@ def _register_routes(app: FastAPI) -> None:
                     parsed.params["repo"],
                     int(parsed.params["number"]),
                 )
+
         else:
-            raise HTTPException(status_code=422, detail="Unsupported URL type for benchmark.")
+            raise HTTPException(
+                status_code=422, detail="Unsupported URL type for benchmark."
+            )
 
         t0 = time.perf_counter()
         fetch()
@@ -531,7 +554,9 @@ def _register_routes(app: FastAPI) -> None:
                 logger.warning("benchmark: Go backend call failed: %s", go_error)
 
         go_available = go_ms is not None
-        speedup = round(python_ms / go_ms, 2) if go_ms is not None and go_ms > 0 else None
+        speedup = (
+            round(python_ms / go_ms, 2) if go_ms is not None and go_ms > 0 else None
+        )
         return BenchmarkResult(
             url=url,
             type=typ,
