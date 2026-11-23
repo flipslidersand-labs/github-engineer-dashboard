@@ -1,5 +1,7 @@
 # github-engineer-dashboard
 
+Release type: `service`
+
 A dashboard that analyzes and visualizes any GitHub URL (user / repository / PR / issue) via the GitHub API.  
 Ships two backends — Python (FastAPI) and Go — so you can compare their latency side by side.
 
