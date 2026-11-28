@@ -127,7 +127,9 @@ class GitHubClient:
             repos, repos_partial = f_repos.result()
 
         if repos_partial:
-            logger.warning("get_user_activity(%s): partial data, repo pagination failed", username)
+            logger.warning(
+                "get_user_activity(%s): partial data, repo pagination failed", username
+            )
 
         counts = Counter(e.get("type") or "Unknown" for e in events)
 
@@ -151,7 +153,9 @@ class GitHubClient:
                     }
                 )
         repo_languages = dict(lang_counts.most_common(8))
-        recent_forks = sorted(recent_forks, key=lambda x: x["updated_at"], reverse=True)[:3]
+        recent_forks = sorted(
+            recent_forks, key=lambda x: x["updated_at"], reverse=True
+        )[:3]
 
         return {
             "username": user["login"],
@@ -178,9 +182,13 @@ class GitHubClient:
         base = f"/repos/{username}/{repo}"
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
-            f_contrib = pool.submit(self._try_get_json, f"{base}/contributors?per_page=5")
+            f_contrib = pool.submit(
+                self._try_get_json, f"{base}/contributors?per_page=5"
+            )
             f_langs = pool.submit(self._try_get_json, f"{base}/languages")
-            f_prs = pool.submit(self._try_get_json, f"{base}/pulls?state=open&per_page=100")
+            f_prs = pool.submit(
+                self._try_get_json, f"{base}/pulls?state=open&per_page=100"
+            )
             f_rel = pool.submit(self._try_get_json, f"{base}/releases/latest")
             f_part = pool.submit(self._try_get_json, f"{base}/stats/participation")
             raw_contributors = f_contrib.result()
@@ -299,12 +307,16 @@ class GitHubClient:
                 if not ts:
                     continue
                 try:
-                    parsed_times.append(datetime.fromisoformat(ts.replace("Z", "+00:00")))
+                    parsed_times.append(
+                        datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    )
                 except Exception:
                     pass
             if parsed_times:
                 try:
-                    created = datetime.fromisoformat(pr["created_at"].replace("Z", "+00:00"))
+                    created = datetime.fromisoformat(
+                        pr["created_at"].replace("Z", "+00:00")
+                    )
                     review_wait_hours = round(
                         (min(parsed_times) - created).total_seconds() / 3600, 1
                     )
@@ -383,7 +395,9 @@ class GitHubClient:
             "partial": partial,
         }
 
-    def get_pr_diff(self, username: str, repo: str, number: int, max_bytes: int = 200_000) -> str:
+    def get_pr_diff(
+        self, username: str, repo: str, number: int, max_bytes: int = 200_000
+    ) -> str:
         """Return the unified diff for a pull request, capped at max_bytes.
 
         The diff endpoint has no documented size limit — vendored changes,
@@ -400,7 +414,9 @@ class GitHubClient:
         with self._client.stream("GET", url, headers=headers) as resp:
             if resp.status_code >= 400:
                 resp.read()
-                raise GitHubError(resp.status_code, self._error_message(resp), resp.headers)
+                raise GitHubError(
+                    resp.status_code, self._error_message(resp), resp.headers
+                )
             for chunk in resp.iter_bytes():
                 remaining = max_bytes - total
                 if len(chunk) > remaining:
@@ -456,7 +472,9 @@ class GitHubClient:
             "truncated": truncated,
         }
 
-    def get_user_repos_summary(self, username: str, *, exclude_forks: bool = False) -> dict:
+    def get_user_repos_summary(
+        self, username: str, *, exclude_forks: bool = False
+    ) -> dict:
         """Aggregate stars / forks / language distribution across a user's repos."""
         data = self._aggregate_repo_list(f"/users/{username}/repos", exclude_forks)
         return {**data, "owner": username, "owner_type": "user"}
